@@ -242,7 +242,11 @@ async function allanimeGet(variables, hash, customHeaders) {
 async function resolveStreamUrl(rawUrl) {
     try {
         var decoded = decodeProviderUrl(rawUrl);
-        if (!decoded || decoded.indexOf('http') !== 0) return null;
+        if (!decoded) return null;
+        if (decoded.indexOf('/') === 0) {
+            decoded = 'https://allanime.day' + decoded;
+        }
+        if (decoded.indexOf('http') !== 0) return null;
         console.log('[AM] resolveStreamUrl decoded=' + decoded.substring(0, 80));
         if (decoded.indexOf('clock.json') !== -1) {
             var clockHeaders = {
