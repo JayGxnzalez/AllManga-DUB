@@ -365,13 +365,19 @@ async function extractStreamUrl(slug) {
             try {
                 var decrypted = decodeTobeparsed(data.data.tobeparsed);
                 var parsed = JSON.parse(decrypted);
+                console.log('[AM] parsed keys=' + Object.keys(parsed).join(','));
+                if (parsed && parsed.episode) {
+                    console.log('[AM] episode keys=' + Object.keys(parsed.episode).join(','));
+                    console.log('[AM] sourceUrls count=' + (parsed.episode.sourceUrls ? parsed.episode.sourceUrls.length : 'null'));
+                }
                 sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
             } catch(e) {
-                console.log('Decryption error: ' + e);
+                console.log('[AM] Decryption parse error: ' + e);
             }
         } else if (data.data.episode && data.data.episode.sourceUrls) {
             sourceUrls = data.data.episode.sourceUrls;
         }
+        console.log('[AM] sourceUrls.length=' + sourceUrls.length);
 
         if (!sourceUrls.length) return JSON.stringify({ streams: [], subtitles: [] });
 
