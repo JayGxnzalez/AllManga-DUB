@@ -33,8 +33,13 @@ async function gqlFetch(query) {
     });
     if (!res) return null;
     try {
-        return typeof res.json === "function" ? await res.json() : JSON.parse(await res.text());
-    } catch(e) { return null; }
+        var text = typeof res.text === "function" ? await res.text() : null;
+        if (!text) return null;
+        return JSON.parse(text);
+    } catch(e) {
+        console.log("gqlFetch parse error: " + e);
+        return null;
+    }
 }
 
 function decodeUrl(raw) {
@@ -129,17 +134,27 @@ async function extractEpisodes(url) {
         if (!idMatch) return JSON.stringify([]);
         var showId = idMatch[1];
 
-        var query = '{episodeInfos(showId:"' + showId + '",episodeNumStart:0,episodeNumEnd:9999){_id episodeIdNum vidInforsdub{vidPath}}}';
-        var data = await gqlFetch(query);
+        // Fetch show info to get dub episode count
+        var showQuery = '{show(_id:"' + showId + '"){availableEpisodes}}';
+        var showData = await gqlFetch(showQuery);
+        var dubCount = 0;
+        if (showData && showData.data && showData.data.show && showData.data.show.availableEpisodes) {
+            dubCount = showData.data.show.availableEpisodes.dub || 0;
+        }
+        if (dubCount === 0) return JSON.stringify([]);
+
+        // Fetch episode list
+        var epQuery = '{episodeInfos(showId:"' + showId + '",episodeNumStart:0,episodeNumEnd:9999){episodeIdNum}}';
+        var data = await gqlFetch(epQuery);
         if (!data || !data.data || !data.data.episodeInfos) return JSON.stringify([]);
 
         var eps = data.data.episodeInfos;
         eps.sort(function(a, b) { return (a.episodeIdNum || 0) - (b.episodeIdNum || 0); });
 
+        // Only return up to dubCount episodes
         var results = [];
-        for (var i = 0; i < eps.length; i++) {
+        for (var i = 0; i < eps.length && results.length < dubCount; i++) {
             var ep = eps[i];
-            if (!ep.vidInforsdub || !ep.vidInforsdub.vidPath) continue;
             var epNum = ep.episodeIdNum;
             var epStr = (epNum % 1 === 0) ? String(Math.floor(epNum)) : String(epNum);
             results.push({
