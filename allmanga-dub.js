@@ -389,8 +389,8 @@ async function extractStreamUrl(slug) {
             var source = sourceUrls[i];
             console.log('[AM] src[' + i + '] name=' + source.sourceName + ' type=' + source.type + ' url=' + (source.sourceUrl || 'MISSING').substring(0, 40));
             if (!source.sourceUrl) continue;
-            if (source.type === 'iframe') continue;
-            if (source.sourceUrl.indexOf('tools.fast4speed.rsvp') !== -1) continue;
+            // Only skip iframes that are plain http URLs (not encoded -- URLs)
+            if (source.type === 'iframe' && source.sourceUrl.indexOf('--') !== 0) continue;
 
             var resolved = await resolveStreamUrl(source.sourceUrl);
             if (!resolved) continue;
