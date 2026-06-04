@@ -381,7 +381,8 @@ async function extractStreamUrl(slug) {
 
         if (!sourceUrls.length) return JSON.stringify({ streams: [], subtitles: [] });
 
-        sourceUrls.sort(function(a, b) { return (b.priority || 0) - (a.priority || 0); });
+        // sort removed for debugging
+        console.log('[AM] about to loop sourceUrls');
 
         var streams = [];
         for (var i = 0; i < sourceUrls.length; i++) {
