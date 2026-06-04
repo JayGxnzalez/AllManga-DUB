@@ -64,8 +64,7 @@ function decodeUrl(raw) {
 
 async function searchResults(keyword) {
     try {
-        var encoded = encodeURIComponent(keyword);
-        var query = '{shows(search:{sortBy:Trending,query:"' + encoded + '"},limit:26,page:1,translationType:dub){edges{_id name englishName nativeName thumbnail availableEpisodes}}}';
+        var query = '{shows(search:{sortBy:Latest_Update,query:"' + keyword + '"},limit:26,page:1,translationType:dub){edges{_id name englishName nativeName thumbnail availableEpisodes}}}';
         var data = await gqlFetch(query);
         if (!data || !data.data || !data.data.shows) return JSON.stringify([]);
 
@@ -141,9 +140,11 @@ async function extractEpisodes(url) {
         for (var i = 0; i < eps.length; i++) {
             var ep = eps[i];
             if (!ep.vidInforsdub || !ep.vidInforsdub.vidPath) continue;
+            var epNum = ep.episodeIdNum;
+            var epStr = (epNum % 1 === 0) ? String(Math.floor(epNum)) : String(epNum);
             results.push({
-                href: showId + "|" + ep.episodeIdNum,
-                number: ep.episodeIdNum
+                href: showId + "|" + epStr,
+                number: epNum
             });
         }
         return JSON.stringify(results);
@@ -172,7 +173,6 @@ async function extractStreamUrl(url) {
             return JSON.stringify({ streams: [], subtitles: [] });
         }
 
-        // Sort by priority descending
         sourceUrls.sort(function(a, b) { return (b.priority || 0) - (a.priority || 0); });
 
         var streams = [];
@@ -182,7 +182,6 @@ async function extractStreamUrl(url) {
             var decoded = decodeUrl(src.url);
             if (!decoded) continue;
 
-            // Skip iframe/embed types that won't play directly
             var srcType = (src.type || "").toLowerCase();
             if (srcType === "iframe") continue;
 
