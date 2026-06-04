@@ -1,8 +1,9 @@
 // AllManga (DUB) Module
-// Uses persisted query hashes + hex lookup URL decode + clock.json resolution
+// Uses persisted query hashes + AES-256-CTR decryption + clock.json resolution
 
 var ALLANIME_API = 'https://api.allanime.day/api';
 var ALLANIME_REFR = 'https://allmanga.to';
+var ALLANIME_KEY = 'a254aa27c410f297bd04ba33a0c0df7ff4e706bf3ae27271c6703f84e750f552';
 
 var SEARCH_HASH = 'a24c500a1b765c68ae1d8dd85174931f661c71369c89b92b88b75a725afc471c';
 var EPISODES_HASH = '043448386c7a686bc2aabfbb6b80f6074e795d350df48015023b079527b0848a';
@@ -32,16 +33,161 @@ var HEX_MAP = {
     '14':',','03':';','05':'=','1d':'%'
 };
 
-async function soraFetch(url, options) {
-    options = options || { headers: {}, method: 'GET', body: null };
-    try {
-        if (typeof fetchv2 !== 'undefined') {
-            return await fetchv2(url, options.headers || {}, options.method || 'GET', options.body || null, true, options.encoding || 'utf-8');
-        } else {
-            return await fetch(url, options);
+var SBOX = [
+    0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+    0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+    0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+    0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+    0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+    0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+    0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+    0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+    0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+    0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+    0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+    0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+    0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+    0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+    0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+    0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
+];
+
+function pureAtob(input) {
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+    var str = String(input).replace(/=+$/, '');
+    var output = '';
+    var bc = 0, bs = 0, buffer;
+    for (var i = 0; i < str.length; i++) {
+        buffer = chars.indexOf(str.charAt(i));
+        if (~buffer) {
+            bs = bc % 4 ? bs * 64 + buffer : buffer;
+            if (bc++ % 4) output += String.fromCharCode(255 & bs >> (-2 * bc & 6));
         }
+    }
+    return output;
+}
+
+function hexToBytes(hex) {
+    var bytes = new Uint8Array(hex.length / 2);
+    for (var i = 0; i < hex.length; i += 2) {
+        bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+    }
+    return bytes;
+}
+
+function base64ToBytes(b64) {
+    var binary = pureAtob(b64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+}
+
+function xtime(a) { return ((a << 1) ^ (a & 0x80 ? 0x1b : 0)) & 0xff; }
+
+function aesSubBytes(state) {
+    for (var i = 0; i < 16; i++) state[i] = SBOX[state[i]];
+}
+
+function aesShiftRows(state) {
+    var t;
+    t = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = t;
+    t = state[2]; state[2] = state[10]; state[10] = t;
+    t = state[6]; state[6] = state[14]; state[14] = t;
+    t = state[15]; state[15] = state[11]; state[11] = state[7]; state[7] = state[3]; state[3] = t;
+}
+
+function aesMixColumns(state) {
+    for (var i = 0; i < 16; i += 4) {
+        var s0 = state[i], s1 = state[i+1], s2 = state[i+2], s3 = state[i+3];
+        var h = s0 ^ s1 ^ s2 ^ s3;
+        state[i]   ^= h ^ xtime(s0 ^ s1);
+        state[i+1] ^= h ^ xtime(s1 ^ s2);
+        state[i+2] ^= h ^ xtime(s2 ^ s3);
+        state[i+3] ^= h ^ xtime(s3 ^ s0);
+    }
+}
+
+function aesAddRoundKey(state, w, round) {
+    for (var i = 0; i < 16; i++) state[i] ^= w[round * 16 + i];
+}
+
+function aesKeyExpansion(key) {
+    var RCON = [0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36];
+    var w = new Uint8Array(240);
+    w.set(key);
+    for (var i = 8; i < 60; i++) {
+        var t = w.slice((i-1)*4, i*4);
+        if (i % 8 === 0) {
+            t = new Uint8Array([SBOX[t[1]]^RCON[i/8-1], SBOX[t[2]], SBOX[t[3]], SBOX[t[0]]]);
+        } else if (i % 8 === 4) {
+            t = new Uint8Array([SBOX[t[0]], SBOX[t[1]], SBOX[t[2]], SBOX[t[3]]]);
+        }
+        for (var j = 0; j < 4; j++) w[i*4+j] = w[(i-8)*4+j] ^ t[j];
+    }
+    return w;
+}
+
+function aesEncryptBlock(block, w) {
+    var state = new Uint8Array(block);
+    aesAddRoundKey(state, w, 0);
+    for (var round = 1; round < 14; round++) {
+        aesSubBytes(state);
+        aesShiftRows(state);
+        aesMixColumns(state);
+        aesAddRoundKey(state, w, round);
+    }
+    aesSubBytes(state);
+    aesShiftRows(state);
+    aesAddRoundKey(state, w, 14);
+    return state;
+}
+
+function aesCtrDecrypt(ciphertext, keyHex, ivHex) {
+    var key = hexToBytes(keyHex);
+    var iv = hexToBytes(ivHex);
+    var w = aesKeyExpansion(key);
+    var plaintext = new Uint8Array(ciphertext.length);
+    for (var i = 0; i < ciphertext.length; i += 16) {
+        var counter = new Uint8Array(iv);
+        var blockNum = Math.floor(i / 16);
+        var baseCounter = (iv[12] << 24) | (iv[13] << 16) | (iv[14] << 8) | iv[15];
+        var newCounter = (baseCounter + blockNum) >>> 0;
+        counter[12] = (newCounter >>> 24) & 0xff;
+        counter[13] = (newCounter >>> 16) & 0xff;
+        counter[14] = (newCounter >>> 8) & 0xff;
+        counter[15] = newCounter & 0xff;
+        var keystream = aesEncryptBlock(counter, w);
+        var blockSize = Math.min(16, ciphertext.length - i);
+        for (var j = 0; j < blockSize; j++) {
+            plaintext[i + j] = ciphertext[i + j] ^ keystream[j];
+        }
+    }
+    return plaintext;
+}
+
+function decodeTobeparsed(tobeparsed) {
+    var b64 = tobeparsed;
+    var pad = b64.length % 4;
+    if (pad) b64 += '===='.slice(pad);
+    var data = base64ToBytes(b64);
+    var fileSize = data.length;
+    var ivBytes = data.slice(1, 13);
+    var ivHex = '';
+    for (var i = 0; i < ivBytes.length; i++) {
+        ivHex += ('0' + ivBytes[i].toString(16)).slice(-2);
+    }
+    var ctrHex = ivHex + '00000002';
+    var ctLen = fileSize - 13 - 16;
+    var ciphertext = data.slice(13, 13 + ctLen);
+    var plaintext = aesCtrDecrypt(ciphertext, ALLANIME_KEY, ctrHex);
+    var result = '';
+    for (var j = 0; j < plaintext.length; j++) {
+        result += String.fromCharCode(plaintext[j]);
+    }
+    try {
+        return decodeURIComponent(escape(result));
     } catch(e) {
-        try { return await fetch(url, options); } catch(err) { return null; }
+        return result;
     }
 }
 
@@ -54,6 +200,19 @@ function decodeProviderUrl(encoded) {
         result += HEX_MAP[byte] || '';
     }
     return result.replace('/clock', '/clock.json');
+}
+
+async function soraFetch(url, options) {
+    options = options || { headers: {}, method: 'GET', body: null };
+    try {
+        if (typeof fetchv2 !== 'undefined') {
+            return await fetchv2(url, options.headers || {}, options.method || 'GET', options.body || null, true, options.encoding || 'utf-8');
+        } else {
+            return await fetch(url, options);
+        }
+    } catch(e) {
+        try { return await fetch(url, options); } catch(err) { return null; }
+    }
 }
 
 async function allanimeGet(variables, hash, customHeaders) {
@@ -77,12 +236,8 @@ async function resolveStreamUrl(rawUrl) {
     try {
         var decoded = decodeProviderUrl(rawUrl);
         if (!decoded || decoded.indexOf('http') !== 0) return null;
-        // If it's a clock.json URL, fetch it to get the real HLS link
         if (decoded.indexOf('clock.json') !== -1) {
-            var res = await soraFetch(decoded, {
-                method: 'GET',
-                headers: HEADERS
-            });
+            var res = await soraFetch(decoded, { method: 'GET', headers: HEADERS });
             if (!res) return null;
             var text = typeof res.text === 'function' ? await res.text() : null;
             if (!text) return null;
@@ -137,7 +292,7 @@ async function extractDetails(showId) {
         }
         var show = data.data.show;
         var description = show.description
-            ? show.description.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#039;/g, "'").trim()
+            ? show.description.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&#xE9;/g, 'é').trim()
             : 'No description available';
         var year = show.airedStart && show.airedStart.year ? String(show.airedStart.year) : 'N/A';
         var score = show.averageScore ? show.averageScore + '/100' : 'N/A';
@@ -190,7 +345,16 @@ async function extractStreamUrl(slug) {
         if (!data || !data.data) return JSON.stringify({ streams: [], subtitles: [] });
 
         var sourceUrls = [];
-        if (data.data.episode && data.data.episode.sourceUrls) {
+
+        if (data.data._m && data.data.tobeparsed) {
+            try {
+                var decrypted = decodeTobeparsed(data.data.tobeparsed);
+                var parsed = JSON.parse(decrypted);
+                sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
+            } catch(e) {
+                console.log('Decryption error: ' + e);
+            }
+        } else if (data.data.episode && data.data.episode.sourceUrls) {
             sourceUrls = data.data.episode.sourceUrls;
         }
 
