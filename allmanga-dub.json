@@ -14,7 +14,7 @@
   "searchBaseUrl": "https://allmanga.to/",
   "scriptUrl": "https://raw.githubusercontent.com/JayGxnzalez/AllManga-DUB/refs/heads/main/allmanga-dub.js",
   "type": "anime",
-  "downloadSupport": false,
+  "downloadSupport": true,
   "asyncJS": true,
   "softsub": false
 }
