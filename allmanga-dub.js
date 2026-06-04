@@ -1,23 +1,23 @@
 // AllManga (DUB) Module
 // Pure JS AES-256-GCM decryption + clock.json resolution
-// Uses persisted query hashes + AES-256-GCM decryption + clock.json resolution
 
 var ALLANIME_API = 'https://api.allanime.day/api';
 var ALLANIME_REFR = 'https://allmanga.to';
 var ALLANIME_KEY = 'a254aa27c410f297bd04ba33a0c0df7ff4e706bf3ae27271c6703f84e750f552';
+var ALLANIME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0';
 
 var SEARCH_HASH = 'a24c500a1b765c68ae1d8dd85174931f661c71369c89b92b88b75a725afc471c';
 var EPISODES_HASH = '043448386c7a686bc2aabfbb6b80f6074e795d350df48015023b079527b0848a';
 var SOURCES_HASH = 'd405d0edd690624b66baba3068e0edc3ac90f1597d898a1ec8db4e5c43c00fec';
 
 var HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'User-Agent': ALLANIME_UA,
     'Origin': ALLANIME_REFR,
     'Referer': ALLANIME_REFR + '/'
 };
 
 var SOURCES_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'User-Agent': ALLANIME_UA,
     'Origin': 'https://youtu-chan.com',
     'Referer': 'https://youtu-chan.com'
 };
@@ -77,33 +77,21 @@ function base64ToBytes(b64) {
 }
 
 function xtime(a) { return ((a << 1) ^ (a & 0x80 ? 0x1b : 0)) & 0xff; }
-
-function aesSubBytes(state) {
-    for (var i = 0; i < 16; i++) state[i] = SBOX[state[i]];
-}
-
-function aesShiftRows(state) {
+function aesSubBytes(s) { for (var i = 0; i < 16; i++) s[i] = SBOX[s[i]]; }
+function aesShiftRows(s) {
     var t;
-    t = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = t;
-    t = state[2]; state[2] = state[10]; state[10] = t;
-    t = state[6]; state[6] = state[14]; state[14] = t;
-    t = state[15]; state[15] = state[11]; state[11] = state[7]; state[7] = state[3]; state[3] = t;
+    t=s[1];s[1]=s[5];s[5]=s[9];s[9]=s[13];s[13]=t;
+    t=s[2];s[2]=s[10];s[10]=t;t=s[6];s[6]=s[14];s[14]=t;
+    t=s[15];s[15]=s[11];s[11]=s[7];s[7]=s[3];s[3]=t;
 }
-
-function aesMixColumns(state) {
+function aesMixColumns(s) {
     for (var i = 0; i < 16; i += 4) {
-        var s0 = state[i], s1 = state[i+1], s2 = state[i+2], s3 = state[i+3];
-        var h = s0 ^ s1 ^ s2 ^ s3;
-        state[i]   ^= h ^ xtime(s0 ^ s1);
-        state[i+1] ^= h ^ xtime(s1 ^ s2);
-        state[i+2] ^= h ^ xtime(s2 ^ s3);
-        state[i+3] ^= h ^ xtime(s3 ^ s0);
+        var s0=s[i],s1=s[i+1],s2=s[i+2],s3=s[i+3],h=s0^s1^s2^s3;
+        s[i]^=h^xtime(s0^s1);s[i+1]^=h^xtime(s1^s2);
+        s[i+2]^=h^xtime(s2^s3);s[i+3]^=h^xtime(s3^s0);
     }
 }
-
-function aesAddRoundKey(state, w, round) {
-    for (var i = 0; i < 16; i++) state[i] ^= w[round * 16 + i];
-}
+function aesAddRoundKey(s, w, r) { for (var i = 0; i < 16; i++) s[i] ^= w[r*16+i]; }
 
 function aesKeyExpansion(key) {
     var RCON = [0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36];
@@ -111,49 +99,31 @@ function aesKeyExpansion(key) {
     w.set(key);
     for (var i = 8; i < 60; i++) {
         var t = w.slice((i-1)*4, i*4);
-        if (i % 8 === 0) {
-            t = new Uint8Array([SBOX[t[1]]^RCON[i/8-1], SBOX[t[2]], SBOX[t[3]], SBOX[t[0]]]);
-        } else if (i % 8 === 4) {
-            t = new Uint8Array([SBOX[t[0]], SBOX[t[1]], SBOX[t[2]], SBOX[t[3]]]);
-        }
+        if (i % 8 === 0) t = new Uint8Array([SBOX[t[1]]^RCON[i/8-1],SBOX[t[2]],SBOX[t[3]],SBOX[t[0]]]);
+        else if (i % 8 === 4) t = new Uint8Array([SBOX[t[0]],SBOX[t[1]],SBOX[t[2]],SBOX[t[3]]]);
         for (var j = 0; j < 4; j++) w[i*4+j] = w[(i-8)*4+j] ^ t[j];
     }
     return w;
 }
 
 function aesEncryptBlock(block, w) {
-    var state = new Uint8Array(block);
-    aesAddRoundKey(state, w, 0);
-    for (var round = 1; round < 14; round++) {
-        aesSubBytes(state);
-        aesShiftRows(state);
-        aesMixColumns(state);
-        aesAddRoundKey(state, w, round);
-    }
-    aesSubBytes(state);
-    aesShiftRows(state);
-    aesAddRoundKey(state, w, 14);
-    return state;
+    var s = new Uint8Array(block);
+    aesAddRoundKey(s, w, 0);
+    for (var r = 1; r < 14; r++) { aesSubBytes(s); aesShiftRows(s); aesMixColumns(s); aesAddRoundKey(s, w, r); }
+    aesSubBytes(s); aesShiftRows(s); aesAddRoundKey(s, w, 14);
+    return s;
 }
 
-// GCM uses CTR mode starting at counter=2 for data (counter=1 is used for auth tag)
 function aesGcmDecrypt(ciphertextWithTag, keyHex, iv) {
     var key = hexToBytes(keyHex);
     var w = aesKeyExpansion(key);
-
-    // Separate ciphertext and auth tag (last 16 bytes)
     var ctLen = ciphertextWithTag.length - 16;
     var ciphertext = ciphertextWithTag.slice(0, ctLen);
-
-    // Build initial counter block J0 from 12-byte IV: IV || 00000001
     var j0 = new Uint8Array(16);
     for (var i = 0; i < 12; i++) j0[i] = iv[i];
     j0[15] = 1;
-
-    // Decrypt using CTR starting at counter=2
     var plaintext = new Uint8Array(ciphertext.length);
     for (var pos = 0; pos < ciphertext.length; pos += 16) {
-        // Increment counter (big-endian increment of last 4 bytes)
         var ctr = new Uint8Array(j0);
         var blockNum = Math.floor(pos / 16) + 2;
         ctr[12] = (blockNum >>> 24) & 0xff;
@@ -162,9 +132,7 @@ function aesGcmDecrypt(ciphertextWithTag, keyHex, iv) {
         ctr[15] = blockNum & 0xff;
         var keystream = aesEncryptBlock(ctr, w);
         var blockSize = Math.min(16, ciphertext.length - pos);
-        for (var k = 0; k < blockSize; k++) {
-            plaintext[pos + k] = ciphertext[pos + k] ^ keystream[k];
-        }
+        for (var k = 0; k < blockSize; k++) plaintext[pos+k] = ciphertext[pos+k] ^ keystream[k];
     }
     return plaintext;
 }
@@ -175,28 +143,17 @@ function decodeTobeparsed(tobeparsed) {
         var pad = b64.length % 4;
         if (pad) b64 += '===='.slice(pad);
         var data = base64ToBytes(b64);
-        console.log('[AM] data.length=' + data.length + ' byte0=' + data[0]);
         var iv = data.slice(1, 13);
         var ciphertextWithTag = data.slice(13);
-        console.log('[AM] iv=' + Array.prototype.slice.call(iv).map(function(b){return ('0'+b.toString(16)).slice(-2)}).join('') + ' ct.length=' + ciphertextWithTag.length);
         var plaintext = aesGcmDecrypt(ciphertextWithTag, ALLANIME_KEY, iv);
-        console.log('[AM] plaintext.length=' + plaintext.length + ' first4=' + Array.prototype.slice.call(plaintext.slice(0,4)).map(function(b){return ('0'+b.toString(16)).slice(-2)}).join(''));
         var result = '';
-        for (var i = 0; i < plaintext.length; i++) {
-            result += String.fromCharCode(plaintext[i]);
-        }
-        console.log('[AM] result preview=' + result.substring(0, 50));
-        try {
-            return decodeURIComponent(escape(result));
-        } catch(e) {
-            return result;
-        }
+        for (var i = 0; i < plaintext.length; i++) result += String.fromCharCode(plaintext[i]);
+        try { return decodeURIComponent(escape(result)); } catch(e) { return result; }
     } catch(e) {
-        console.log('[AM] decodeTobeparsed error: ' + e);
+        console.log('decodeTobeparsed error: ' + e);
         return null;
     }
 }
-
 
 function decodeProviderUrl(encoded) {
     if (encoded.indexOf('--') !== 0) return encoded;
@@ -239,49 +196,47 @@ async function allanimeGet(variables, hash, customHeaders) {
     }
 }
 
-async function resolveStreamUrl(rawUrl) {
+async function resolveStreamUrl(source) {
     try {
+        var rawUrl = source.sourceUrl;
         var decoded = decodeProviderUrl(rawUrl);
         if (!decoded) return null;
-        if (decoded.indexOf('/') === 0) {
-            decoded = 'https://allanime.day' + decoded;
-        }
+        if (decoded.indexOf('/') === 0) decoded = 'https://allanime.day' + decoded;
         if (decoded.indexOf('http') !== 0) return null;
-        console.log('[AM] resolveStreamUrl decoded=' + decoded.substring(0, 80));
+
         if (decoded.indexOf('clock.json') !== -1) {
-            var clockHeaders = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-                'Referer': 'https://allanime.day/player.html',
-                'Origin': 'https://allanime.day'
-            };
-            var res = await soraFetch(decoded, { method: 'GET', headers: clockHeaders });
-            if (!res) { console.log('[AM] clock.json no response'); return null; }
+            var res = await soraFetch(decoded, {
+                method: 'GET',
+                headers: {
+                    'User-Agent': ALLANIME_UA,
+                    'Referer': 'https://allanime.day/player.html',
+                    'Origin': 'https://allanime.day'
+                }
+            });
+            if (!res) return null;
             var text = typeof res.text === 'function' ? await res.text() : null;
-            console.log('[AM] clock.json response=' + (text ? text.substring(0, 100) : 'null'));
             if (!text) return null;
             var json = JSON.parse(text);
             if (json && json.links && json.links.length > 0) {
-                return json.links[0].link || null;
+                return {
+                    title: source.sourceName || 'Server',
+                    streamUrl: json.links[0].link,
+                    headers: { 'Referer': ALLANIME_REFR + '/' }
+                };
             }
             return null;
         }
-        // Direct URL (e.g. Yt-mp4 fast4speed)
-        return decoded;
+
+        // Direct URL - skip MP4 direct links (not HLS)
+        return null;
     } catch(e) {
-        console.log('[AM] resolveStreamUrl error: ' + e);
         return null;
     }
 }
 
 async function searchResults(keyword) {
     try {
-        var variables = {
-            search: { query: keyword },
-            limit: 26,
-            page: 1,
-            translationType: 'dub',
-            countryOrigin: 'ALL'
-        };
+        var variables = { search: { query: keyword }, limit: 26, page: 1, translationType: 'dub', countryOrigin: 'ALL' };
         var data = await allanimeGet(variables, SEARCH_HASH);
         if (!data || !data.data || !data.data.shows || !data.data.shows.edges) return JSON.stringify([]);
         var results = [];
@@ -315,11 +270,7 @@ async function extractDetails(showId) {
             : 'No description available';
         var year = show.airedStart && show.airedStart.year ? String(show.airedStart.year) : 'N/A';
         var score = show.averageScore ? show.averageScore + '/100' : 'N/A';
-        return JSON.stringify([{
-            description: description,
-            aliases: 'Score: ' + score,
-            airdate: 'Year: ' + year
-        }]);
+        return JSON.stringify([{ description: description, aliases: 'Score: ' + score, airdate: 'Year: ' + year }]);
     } catch(e) {
         console.log('extractDetails error: ' + e);
         return JSON.stringify([{ description: 'No description available', aliases: 'N/A', airdate: 'N/A' }]);
@@ -355,55 +306,44 @@ async function extractStreamUrl(slug) {
         var parts = slug.split('|');
         var showId = parts[0];
         var epNumber = parts[1];
-        var variables = {
-            showId: showId,
-            translationType: 'dub',
-            episodeString: String(epNumber)
-        };
+        var variables = { showId: showId, translationType: 'dub', episodeString: String(epNumber) };
         var data = await allanimeGet(variables, SOURCES_HASH, SOURCES_HEADERS);
         if (!data || !data.data) return JSON.stringify({ streams: [], subtitles: [] });
 
         var sourceUrls = [];
-
         if (data.data._m && data.data.tobeparsed) {
             try {
                 var decrypted = decodeTobeparsed(data.data.tobeparsed);
                 var parsed = JSON.parse(decrypted);
-                console.log('[AM] parsed keys=' + Object.keys(parsed).join(','));
-                if (parsed && parsed.episode) {
-                    console.log('[AM] episode keys=' + Object.keys(parsed.episode).join(','));
-                    console.log('[AM] sourceUrls count=' + (parsed.episode.sourceUrls ? parsed.episode.sourceUrls.length : 'null'));
-                }
                 sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
             } catch(e) {
-                console.log('[AM] Decryption parse error: ' + e);
+                console.log('Decryption parse error: ' + e);
             }
         } else if (data.data.episode && data.data.episode.sourceUrls) {
             sourceUrls = data.data.episode.sourceUrls;
         }
-        console.log('[AM] sourceUrls.length=' + sourceUrls.length);
 
         if (!sourceUrls.length) return JSON.stringify({ streams: [], subtitles: [] });
 
-        // sort removed for debugging
-        console.log('[AM] about to loop sourceUrls');
+        // Filter to -- encoded sources only (go through clock.json → HLS)
+        var validSources = [];
+        for (var i = 0; i < sourceUrls.length; i++) {
+            var src = sourceUrls[i];
+            if (!src.sourceUrl) continue;
+            if (src.sourceUrl.indexOf('--') !== 0) continue;
+            validSources.push(src);
+        }
+
+        // Parallel fetch all clock.json URLs
+        var promises = [];
+        for (var i = 0; i < validSources.length; i++) {
+            promises.push(resolveStreamUrl(validSources[i]));
+        }
+        var results = await Promise.all(promises);
 
         var streams = [];
-        for (var i = 0; i < sourceUrls.length; i++) {
-            var source = sourceUrls[i];
-            console.log('[AM] src[' + i + '] name=' + source.sourceName + ' type=' + source.type + ' url=' + (source.sourceUrl || 'MISSING').substring(0, 40));
-            if (!source.sourceUrl) continue;
-            // Only skip iframes that are plain http URLs (not encoded -- URLs)
-            if (source.type === 'iframe' && source.sourceUrl.indexOf('--') !== 0) continue;
-
-            var resolved = await resolveStreamUrl(source.sourceUrl);
-            if (!resolved) continue;
-
-            streams.push({
-                title: source.sourceName || 'Server ' + (i + 1),
-                streamUrl: resolved,
-                headers: { 'Referer': ALLANIME_REFR + '/' }
-            });
+        for (var i = 0; i < results.length; i++) {
+            if (results[i]) streams.push(results[i]);
         }
 
         return JSON.stringify({ streams: streams, subtitles: [] });
