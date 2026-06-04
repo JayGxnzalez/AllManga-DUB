@@ -228,8 +228,12 @@ async function resolveStreamUrl(source) {
             return null;
         }
 
-        // Direct URL - skip MP4 direct links (not HLS)
-        return null;
+        // Direct URL (e.g. Yt-mp4 fast4speed)
+        return {
+            title: source.sourceName || 'Server',
+            streamUrl: decoded,
+            headers: { 'Referer': ALLANIME_REFR + '/' }
+        };
     } catch(e) {
         return null;
     }
@@ -326,16 +330,24 @@ async function extractStreamUrl(slug) {
 
         if (!sourceUrls.length) return JSON.stringify({ streams: [], subtitles: [] });
 
-        // Filter to -- encoded sources only (go through clock.json → HLS)
+        // Filter to playable sources only (skip plain iframe embeds)
+        var SKIP_DOMAINS = ['streamsb.net', 'mp4upload.com', 'streamlare.com', 'ok.ru'];
         var validSources = [];
         for (var i = 0; i < sourceUrls.length; i++) {
             var src = sourceUrls[i];
             if (!src.sourceUrl) continue;
-            if (src.sourceUrl.indexOf('--') !== 0) continue;
+            // Skip plain iframe URLs that are webpage embeds
+            if (src.type === 'iframe' && src.sourceUrl.indexOf('--') !== 0) {
+                var skip = false;
+                for (var d = 0; d < SKIP_DOMAINS.length; d++) {
+                    if (src.sourceUrl.indexOf(SKIP_DOMAINS[d]) !== -1) { skip = true; break; }
+                }
+                if (skip) continue;
+            }
             validSources.push(src);
         }
 
-        // Parallel fetch all clock.json URLs
+        // Parallel fetch all sources
         var promises = [];
         for (var i = 0; i < validSources.length; i++) {
             promises.push(resolveStreamUrl(validSources[i]));
