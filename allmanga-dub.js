@@ -343,6 +343,8 @@ async function extractStreamUrl(slug) {
             if (seenUrls[src.sourceUrl]) continue;
             seenUrls[src.sourceUrl] = true;
             // Skip plain iframe URLs that are webpage embeds
+            // Skip type=player (direct MP4, not HLS compatible)
+            if (src.type === 'player') continue;
             if (src.type === 'iframe' && src.sourceUrl.indexOf('--') !== 0) {
                 var skip = false;
                 for (var d = 0; d < SKIP_DOMAINS.length; d++) {
