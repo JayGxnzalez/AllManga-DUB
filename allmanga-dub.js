@@ -206,7 +206,7 @@ async function resolveStreamUrl(source) {
         if (decoded.indexOf('http') !== 0) return null;
 
         if (decoded.indexOf('clock.json') !== -1) {
-            var res = await soraFetch(decoded, {
+            var fetchPromise = soraFetch(decoded, {
                 method: 'GET',
                 headers: {
                     'User-Agent': ALLANIME_UA,
@@ -214,6 +214,8 @@ async function resolveStreamUrl(source) {
                     'Origin': 'https://allanime.day'
                 }
             });
+            var timeoutPromise = new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 8000); });
+            var res = await Promise.race([fetchPromise, timeoutPromise]);
             if (!res) return null;
             var text = typeof res.text === 'function' ? await res.text() : null;
             if (!text) return null;
@@ -331,11 +333,15 @@ async function extractStreamUrl(slug) {
         if (!sourceUrls.length) return JSON.stringify({ streams: [], subtitles: [] });
 
         // Filter to playable sources only (skip plain iframe embeds)
+        // Also deduplicate by sourceUrl to avoid hitting same clock.json multiple times
         var SKIP_DOMAINS = ['streamsb.net', 'mp4upload.com', 'streamlare.com', 'ok.ru'];
         var validSources = [];
+        var seenUrls = {};
         for (var i = 0; i < sourceUrls.length; i++) {
             var src = sourceUrls[i];
             if (!src.sourceUrl) continue;
+            if (seenUrls[src.sourceUrl]) continue;
+            seenUrls[src.sourceUrl] = true;
             // Skip plain iframe URLs that are webpage embeds
             if (src.type === 'iframe' && src.sourceUrl.indexOf('--') !== 0) {
                 var skip = false;
