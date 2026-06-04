@@ -175,21 +175,24 @@ function decodeTobeparsed(tobeparsed) {
         var pad = b64.length % 4;
         if (pad) b64 += '===='.slice(pad);
         var data = base64ToBytes(b64);
-        // byte 0: skip, bytes 1-12: IV, bytes 13+: ciphertext+tag
+        console.log('[AM] data.length=' + data.length + ' byte0=' + data[0]);
         var iv = data.slice(1, 13);
         var ciphertextWithTag = data.slice(13);
+        console.log('[AM] iv=' + Array.prototype.slice.call(iv).map(function(b){return ('0'+b.toString(16)).slice(-2)}).join('') + ' ct.length=' + ciphertextWithTag.length);
         var plaintext = aesGcmDecrypt(ciphertextWithTag, ALLANIME_KEY, iv);
+        console.log('[AM] plaintext.length=' + plaintext.length + ' first4=' + Array.prototype.slice.call(plaintext.slice(0,4)).map(function(b){return ('0'+b.toString(16)).slice(-2)}).join(''));
         var result = '';
         for (var i = 0; i < plaintext.length; i++) {
             result += String.fromCharCode(plaintext[i]);
         }
+        console.log('[AM] result preview=' + result.substring(0, 50));
         try {
             return decodeURIComponent(escape(result));
         } catch(e) {
             return result;
         }
     } catch(e) {
-        console.log('decodeTobeparsed error: ' + e);
+        console.log('[AM] decodeTobeparsed error: ' + e);
         return null;
     }
 }
@@ -240,10 +243,17 @@ async function resolveStreamUrl(rawUrl) {
     try {
         var decoded = decodeProviderUrl(rawUrl);
         if (!decoded || decoded.indexOf('http') !== 0) return null;
+        console.log('[AM] resolveStreamUrl decoded=' + decoded.substring(0, 80));
         if (decoded.indexOf('clock.json') !== -1) {
-            var res = await soraFetch(decoded, { method: 'GET', headers: HEADERS });
-            if (!res) return null;
+            var clockHeaders = {
+                'User-Agent': GQL_HEADERS['User-Agent'],
+                'Referer': 'https://allanime.day/player.html',
+                'Origin': 'https://allanime.day'
+            };
+            var res = await soraFetch(decoded, { method: 'GET', headers: clockHeaders });
+            if (!res) { console.log('[AM] clock.json no response'); return null; }
             var text = typeof res.text === 'function' ? await res.text() : null;
+            console.log('[AM] clock.json response=' + (text ? text.substring(0, 100) : 'null'));
             if (!text) return null;
             var json = JSON.parse(text);
             if (json && json.links && json.links.length > 0) {
@@ -251,9 +261,10 @@ async function resolveStreamUrl(rawUrl) {
             }
             return null;
         }
+        // Direct URL (e.g. Yt-mp4 fast4speed)
         return decoded;
     } catch(e) {
-        console.log('resolveStreamUrl error: ' + e);
+        console.log('[AM] resolveStreamUrl error: ' + e);
         return null;
     }
 }
