@@ -194,17 +194,22 @@ async function extractStreamUrl(url) {
         for (var i = 0; i < sourceUrls.length; i++) {
             var src = sourceUrls[i];
             if (!src || !src.url) continue;
-            var decoded = decodeUrl(src.url);
-            if (!decoded) continue;
 
             var srcType = (src.type || "").toLowerCase();
             if (srcType === "iframe") continue;
 
+            var decoded = decodeUrl(src.url);
+            if (!decoded) continue;
+
             var serverName = src.sourceName || "Server " + (i + 1);
+
+            // Resolve through clock.json to get actual HLS URL
+            var resolvedUrl = await resolveClockUrl(decoded);
+            if (!resolvedUrl) continue;
 
             streams.push({
                 title: serverName,
-                streamUrl: decoded,
+                streamUrl: resolvedUrl,
                 headers: {
                     "Referer": SITE_URL + "/",
                     "Origin": SITE_URL
@@ -216,5 +221,30 @@ async function extractStreamUrl(url) {
     } catch(e) {
         console.log("extractStreamUrl error: " + e);
         return JSON.stringify({ streams: [], subtitles: [] });
+    }
+}
+
+async function resolveClockUrl(decoded) {
+    try {
+        var clockUrl = "https://allanime.day/apivtwo/clock.json?id=" + decoded;
+        var res = await soraFetch(clockUrl, {
+            method: "GET",
+            headers: {
+                "User-Agent": GQL_HEADERS["User-Agent"],
+                "Referer": SITE_URL + "/",
+                "Origin": SITE_URL
+            }
+        });
+        if (!res) return null;
+        var text = typeof res.text === "function" ? await res.text() : null;
+        if (!text) return null;
+        var json = JSON.parse(text);
+        if (json && json.links && json.links.length > 0) {
+            return json.links[0].link || null;
+        }
+        return null;
+    } catch(e) {
+        console.log("resolveClockUrl error: " + e);
+        return null;
     }
 }
