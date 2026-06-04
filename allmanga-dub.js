@@ -1,22 +1,42 @@
 // AllManga (DUB) Module
-// Uses AllAnime GraphQL API with XOR-decoded sourceUrls, dub-only
+// Uses persisted query hashes + hex lookup URL decode + clock.json resolution
 
-var GQL_URL = "https://api.allanime.day/api";
-var SITE_URL = "https://allmanga.to";
+var ALLANIME_API = 'https://api.allanime.day/api';
+var ALLANIME_REFR = 'https://allmanga.to';
 
-var GQL_HEADERS = {
-    "Origin": SITE_URL,
-    "Referer": SITE_URL + "/",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Content-Type": "application/json",
-    "Accept": "application/json, text/plain, */*"
+var SEARCH_HASH = 'a24c500a1b765c68ae1d8dd85174931f661c71369c89b92b88b75a725afc471c';
+var EPISODES_HASH = '043448386c7a686bc2aabfbb6b80f6074e795d350df48015023b079527b0848a';
+var SOURCES_HASH = 'd405d0edd690624b66baba3068e0edc3ac90f1597d898a1ec8db4e5c43c00fec';
+
+var HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Origin': ALLANIME_REFR,
+    'Referer': ALLANIME_REFR + '/'
+};
+
+var SOURCES_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Origin': 'https://youtu-chan.com',
+    'Referer': 'https://youtu-chan.com'
+};
+
+var HEX_MAP = {
+    '79':'A','7a':'B','7b':'C','7c':'D','7d':'E','7e':'F','7f':'G','70':'H','71':'I','72':'J',
+    '73':'K','74':'L','75':'M','76':'N','77':'O','68':'P','69':'Q','6a':'R','6b':'S','6c':'T',
+    '6d':'U','6e':'V','6f':'W','60':'X','61':'Y','62':'Z','59':'a','5a':'b','5b':'c','5c':'d',
+    '5d':'e','5e':'f','5f':'g','50':'h','51':'i','52':'j','53':'k','54':'l','55':'m','56':'n',
+    '57':'o','48':'p','49':'q','4a':'r','4b':'s','4c':'t','4d':'u','4e':'v','4f':'w','40':'x',
+    '41':'y','42':'z','08':'0','09':'1','0a':'2','0b':'3','0c':'4','0d':'5','0e':'6','0f':'7',
+    '00':'8','01':'9','15':'-','16':'.','67':'_','46':'~','02':':','17':'/','07':'?','1b':'#',
+    '63':'[','65':']','78':'@','19':'!','1c':'$','1e':'&','10':'(','11':')','12':'*','13':'+',
+    '14':',','03':';','05':'=','1d':'%'
 };
 
 async function soraFetch(url, options) {
-    options = options || { headers: {}, method: "GET", body: null };
+    options = options || { headers: {}, method: 'GET', body: null };
     try {
-        if (typeof fetchv2 !== "undefined") {
-            return await fetchv2(url, options.headers || {}, options.method || "GET", options.body || null, true, options.encoding || "utf-8");
+        if (typeof fetchv2 !== 'undefined') {
+            return await fetchv2(url, options.headers || {}, options.method || 'GET', options.body || null, true, options.encoding || 'utf-8');
         } else {
             return await fetch(url, options);
         }
@@ -25,226 +45,179 @@ async function soraFetch(url, options) {
     }
 }
 
-async function gqlFetch(query) {
-    var res = await soraFetch(GQL_URL, {
-        method: "POST",
-        headers: GQL_HEADERS,
-        body: JSON.stringify({ query: query })
-    });
-    if (!res) return null;
+function decodeProviderUrl(encoded) {
+    if (encoded.indexOf('--') !== 0) return encoded;
+    var hex = encoded.slice(2);
+    var result = '';
+    for (var i = 0; i < hex.length; i += 2) {
+        var byte = hex.substr(i, 2);
+        result += HEX_MAP[byte] || '';
+    }
+    return result.replace('/clock', '/clock.json');
+}
+
+async function allanimeGet(variables, hash, customHeaders) {
+    var encoded = encodeURIComponent(JSON.stringify(variables));
+    var ext = encodeURIComponent(JSON.stringify({ persistedQuery: { version: 1, sha256Hash: hash } }));
+    var url = ALLANIME_API + '?variables=' + encoded + '&extensions=' + ext;
+    var headers = customHeaders || HEADERS;
     try {
-        var text = typeof res.text === "function" ? await res.text() : null;
-        if (!text) return null;
+        var res = await soraFetch(url, { headers: headers, method: 'GET', body: null });
+        if (!res) return null;
+        var text = typeof res.text === 'function' ? await res.text() : null;
+        if (!text || text.trim().indexOf('<') === 0) return null;
         return JSON.parse(text);
     } catch(e) {
-        console.log("gqlFetch parse error: " + e);
+        console.log('AllManga API error: ' + e);
         return null;
     }
 }
 
-function decodeUrl(raw) {
-    if (!raw) return raw;
-    if (raw.indexOf("--") === 0) {
-        try {
-            var hex = raw.slice(2);
-            var result = "";
-            for (var i = 0; i < hex.length; i += 2) {
-                result += String.fromCharCode(parseInt(hex.substr(i, 2), 16) ^ 56);
+async function resolveStreamUrl(rawUrl) {
+    try {
+        var decoded = decodeProviderUrl(rawUrl);
+        if (!decoded || decoded.indexOf('http') !== 0) return null;
+        // If it's a clock.json URL, fetch it to get the real HLS link
+        if (decoded.indexOf('clock.json') !== -1) {
+            var res = await soraFetch(decoded, {
+                method: 'GET',
+                headers: HEADERS
+            });
+            if (!res) return null;
+            var text = typeof res.text === 'function' ? await res.text() : null;
+            if (!text) return null;
+            var json = JSON.parse(text);
+            if (json && json.links && json.links.length > 0) {
+                return json.links[0].link || null;
             }
-            return result;
-        } catch(e) {}
+            return null;
+        }
+        return decoded;
+    } catch(e) {
+        console.log('resolveStreamUrl error: ' + e);
+        return null;
     }
-    if (raw.indexOf("ap/") === 0) {
-        try {
-            var hex2 = raw.slice(3);
-            var result2 = "";
-            for (var j = 0; j < hex2.length; j += 2) {
-                result2 += String.fromCharCode(parseInt(hex2.substr(j, 2), 16));
-            }
-            return result2;
-        } catch(e) {}
-    }
-    return raw;
 }
 
 async function searchResults(keyword) {
     try {
-        var query = '{shows(search:{sortBy:Latest_Update,query:"' + keyword + '"},limit:26,page:1,translationType:dub){edges{_id name englishName nativeName thumbnail availableEpisodes}}}';
-        var data = await gqlFetch(query);
-        if (!data || !data.data || !data.data.shows) return JSON.stringify([]);
-
-        var edges = data.data.shows.edges;
+        var variables = {
+            search: { query: keyword },
+            limit: 26,
+            page: 1,
+            translationType: 'dub',
+            countryOrigin: 'ALL'
+        };
+        var data = await allanimeGet(variables, SEARCH_HASH);
+        if (!data || !data.data || !data.data.shows || !data.data.shows.edges) return JSON.stringify([]);
         var results = [];
+        var edges = data.data.shows.edges;
         for (var i = 0; i < edges.length; i++) {
             var show = edges[i];
             if (!show.availableEpisodes || !show.availableEpisodes.dub || show.availableEpisodes.dub === 0) continue;
-            var title = show.englishName || show.name || "Unknown";
-            var image = show.thumbnail || "";
-            if (image && image.indexOf("http") !== 0) {
-                image = "https://allanimenews.com/" + image.replace(/^\//, "");
-            }
             results.push({
-                title: title,
-                image: image,
-                href: "https://allmanga.to/anime/" + show._id
+                title: show.englishName || show.name || 'Unknown',
+                image: show.thumbnail || '',
+                href: show._id
             });
         }
         return JSON.stringify(results);
     } catch(e) {
-        console.log("searchResults error: " + e);
+        console.log('searchResults error: ' + e);
         return JSON.stringify([]);
     }
 }
 
-async function extractDetails(url) {
+async function extractDetails(showId) {
     try {
-        var idMatch = url.match(/\/anime\/([^\/\?#]+)/);
-        if (!idMatch) return JSON.stringify([{ description: "N/A", aliases: "N/A", airdate: "N/A" }]);
-        var showId = idMatch[1];
-
-        var query = '{show(_id:"' + showId + '"){name englishName nativeName description altNames airedStart airedEnd status genres}}';
-        var data = await gqlFetch(query);
-        if (!data || !data.data || !data.data.show) return JSON.stringify([{ description: "N/A", aliases: "N/A", airdate: "N/A" }]);
-
-        var show = data.data.show;
-        var description = show.description || "N/A";
-        var aliases = (show.altNames && show.altNames.length > 0) ? show.altNames.join(", ") : (show.nativeName || "N/A");
-        var airdate = "N/A";
-        if (show.airedStart && show.airedStart.year) {
-            airdate = show.airedStart.year + "";
-            if (show.airedEnd && show.airedEnd.year) {
-                airdate += " - " + show.airedEnd.year;
-            }
+        var variables = { _id: showId };
+        var data = await allanimeGet(variables, EPISODES_HASH);
+        if (!data || !data.data || !data.data.show) {
+            return JSON.stringify([{ description: 'No description available', aliases: 'N/A', airdate: 'N/A' }]);
         }
-
+        var show = data.data.show;
+        var description = show.description
+            ? show.description.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#039;/g, "'").trim()
+            : 'No description available';
+        var year = show.airedStart && show.airedStart.year ? String(show.airedStart.year) : 'N/A';
+        var score = show.averageScore ? show.averageScore + '/100' : 'N/A';
         return JSON.stringify([{
             description: description,
-            aliases: aliases,
-            airdate: airdate
+            aliases: 'Score: ' + score,
+            airdate: 'Year: ' + year
         }]);
     } catch(e) {
-        console.log("extractDetails error: " + e);
-        return JSON.stringify([{ description: "N/A", aliases: "N/A", airdate: "N/A" }]);
+        console.log('extractDetails error: ' + e);
+        return JSON.stringify([{ description: 'No description available', aliases: 'N/A', airdate: 'N/A' }]);
     }
 }
 
-async function extractEpisodes(url) {
+async function extractEpisodes(showId) {
     try {
-        var idMatch = url.match(/\/anime\/([^\/\?#]+)/);
-        if (!idMatch) return JSON.stringify([]);
-        var showId = idMatch[1];
-
-        // Fetch show info to get dub episode count
-        var showQuery = '{show(_id:"' + showId + '"){availableEpisodes}}';
-        var showData = await gqlFetch(showQuery);
-        var dubCount = 0;
-        if (showData && showData.data && showData.data.show && showData.data.show.availableEpisodes) {
-            dubCount = showData.data.show.availableEpisodes.dub || 0;
+        var variables = { _id: showId };
+        var data = await allanimeGet(variables, EPISODES_HASH);
+        if (!data || !data.data || !data.data.show) return JSON.stringify([]);
+        var dubEpisodes = (data.data.show.availableEpisodesDetail && data.data.show.availableEpisodesDetail.dub) || [];
+        if (!dubEpisodes.length) return JSON.stringify([]);
+        var parsed = [];
+        for (var i = 0; i < dubEpisodes.length; i++) {
+            var n = parseFloat(dubEpisodes[i]);
+            if (!isNaN(n)) parsed.push(n);
         }
-        if (dubCount === 0) return JSON.stringify([]);
-
-        // Fetch episode list
-        var epQuery = '{episodeInfos(showId:"' + showId + '",episodeNumStart:0,episodeNumEnd:9999){episodeIdNum}}';
-        var data = await gqlFetch(epQuery);
-        if (!data || !data.data || !data.data.episodeInfos) return JSON.stringify([]);
-
-        var eps = data.data.episodeInfos;
-        eps.sort(function(a, b) { return (a.episodeIdNum || 0) - (b.episodeIdNum || 0); });
-
-        // Only return up to dubCount episodes
+        parsed.sort(function(a, b) { return a - b; });
         var results = [];
-        for (var i = 0; i < eps.length && results.length < dubCount; i++) {
-            var ep = eps[i];
-            var epNum = ep.episodeIdNum;
-            var epStr = (epNum % 1 === 0) ? String(Math.floor(epNum)) : String(epNum);
-            results.push({
-                href: showId + "|" + epStr,
-                number: epNum
-            });
+        for (var j = 0; j < parsed.length; j++) {
+            results.push({ href: showId + '|' + parsed[j], number: parsed[j] });
         }
         return JSON.stringify(results);
     } catch(e) {
-        console.log("extractEpisodes error: " + e);
+        console.log('extractEpisodes error: ' + e);
         return JSON.stringify([]);
     }
 }
 
-async function extractStreamUrl(url) {
+async function extractStreamUrl(slug) {
     try {
-        var parts = url.split("|");
-        if (parts.length < 2) return JSON.stringify({ streams: [], subtitles: [] });
+        var parts = slug.split('|');
         var showId = parts[0];
-        var epNum = parts[1];
+        var epNumber = parts[1];
+        var variables = {
+            showId: showId,
+            translationType: 'dub',
+            episodeString: String(epNumber)
+        };
+        var data = await allanimeGet(variables, SOURCES_HASH, SOURCES_HEADERS);
+        if (!data || !data.data) return JSON.stringify({ streams: [], subtitles: [] });
 
-        var query = '{episode(showId:"' + showId + '",translationType:dub,episodeString:"' + epNum + '"){episodeString sourceUrls}}';
-        var data = await gqlFetch(query);
-
-        if (!data || !data.data || !data.data.episode) {
-            return JSON.stringify({ streams: [], subtitles: [] });
+        var sourceUrls = [];
+        if (data.data.episode && data.data.episode.sourceUrls) {
+            sourceUrls = data.data.episode.sourceUrls;
         }
 
-        var sourceUrls = data.data.episode.sourceUrls;
-        if (!sourceUrls || sourceUrls.length === 0) {
-            return JSON.stringify({ streams: [], subtitles: [] });
-        }
+        if (!sourceUrls.length) return JSON.stringify({ streams: [], subtitles: [] });
 
         sourceUrls.sort(function(a, b) { return (b.priority || 0) - (a.priority || 0); });
 
         var streams = [];
         for (var i = 0; i < sourceUrls.length; i++) {
-            var src = sourceUrls[i];
-            if (!src || !src.url) continue;
+            var source = sourceUrls[i];
+            if (!source.sourceUrl) continue;
+            if (source.type === 'iframe') continue;
+            if (source.sourceUrl.indexOf('tools.fast4speed.rsvp') !== -1) continue;
 
-            var srcType = (src.type || "").toLowerCase();
-            if (srcType === "iframe") continue;
-
-            var decoded = decodeUrl(src.url);
-            if (!decoded) continue;
-
-            var serverName = src.sourceName || "Server " + (i + 1);
-
-            // Resolve through clock.json to get actual HLS URL
-            var resolvedUrl = await resolveClockUrl(decoded);
-            if (!resolvedUrl) continue;
+            var resolved = await resolveStreamUrl(source.sourceUrl);
+            if (!resolved) continue;
 
             streams.push({
-                title: serverName,
-                streamUrl: resolvedUrl,
-                headers: {
-                    "Referer": SITE_URL + "/",
-                    "Origin": SITE_URL
-                }
+                title: source.sourceName || 'Server ' + (i + 1),
+                streamUrl: resolved,
+                headers: { 'Referer': ALLANIME_REFR + '/' }
             });
         }
 
         return JSON.stringify({ streams: streams, subtitles: [] });
     } catch(e) {
-        console.log("extractStreamUrl error: " + e);
+        console.log('extractStreamUrl error: ' + e);
         return JSON.stringify({ streams: [], subtitles: [] });
-    }
-}
-
-async function resolveClockUrl(decoded) {
-    try {
-        var clockUrl = "https://allanime.day/apivtwo/clock.json?id=" + decoded;
-        var res = await soraFetch(clockUrl, {
-            method: "GET",
-            headers: {
-                "User-Agent": GQL_HEADERS["User-Agent"],
-                "Referer": SITE_URL + "/",
-                "Origin": SITE_URL
-            }
-        });
-        if (!res) return null;
-        var text = typeof res.text === "function" ? await res.text() : null;
-        if (!text) return null;
-        var json = JSON.parse(text);
-        if (json && json.links && json.links.length > 0) {
-            return json.links[0].link || null;
-        }
-        return null;
-    } catch(e) {
-        console.log("resolveClockUrl error: " + e);
-        return null;
     }
 }
