@@ -250,7 +250,7 @@ async function resolveStreamUrl(rawUrl) {
         console.log('[AM] resolveStreamUrl decoded=' + decoded.substring(0, 80));
         if (decoded.indexOf('clock.json') !== -1) {
             var clockHeaders = {
-                'User-Agent': GQL_HEADERS['User-Agent'],
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
                 'Referer': 'https://allanime.day/player.html',
                 'Origin': 'https://allanime.day'
             };
