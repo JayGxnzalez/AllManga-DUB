@@ -332,26 +332,16 @@ async function extractStreamUrl(slug) {
 
         if (!sourceUrls.length) return JSON.stringify({ streams: [], subtitles: [] });
 
-        // Filter to playable sources only (skip plain iframe embeds)
-        // Also deduplicate by sourceUrl to avoid hitting same clock.json multiple times
-        var SKIP_DOMAINS = ['streamsb.net', 'mp4upload.com', 'streamlare.com', 'ok.ru'];
+        // Only keep -- encoded sources (resolve via clock.json to real HLS)
+        // Deduplicate by sourceUrl to avoid hitting same endpoint multiple times
         var validSources = [];
         var seenUrls = {};
         for (var i = 0; i < sourceUrls.length; i++) {
             var src = sourceUrls[i];
             if (!src.sourceUrl) continue;
+            if (src.sourceUrl.indexOf('--') !== 0) continue;
             if (seenUrls[src.sourceUrl]) continue;
             seenUrls[src.sourceUrl] = true;
-            // Skip plain iframe URLs that are webpage embeds
-            // Skip type=player (direct MP4, not HLS compatible)
-            if (src.type === 'player') continue;
-            if (src.type === 'iframe' && src.sourceUrl.indexOf('--') !== 0) {
-                var skip = false;
-                for (var d = 0; d < SKIP_DOMAINS.length; d++) {
-                    if (src.sourceUrl.indexOf(SKIP_DOMAINS[d]) !== -1) { skip = true; break; }
-                }
-                if (skip) continue;
-            }
             validSources.push(src);
         }
 
