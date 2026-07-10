@@ -1,11 +1,14 @@
 // AllManga (DUB) Module
-// Pure JS AES-256-GCM decryption + clock.json resolution
+// Pure JS AES-256-GCM decryption + aaReq auth + clock.json resolution
 
 var ALLANIME_API = 'https://api.allanime.day/api';
 var ALLANIME_REFR = 'https://mkissa.to';
 var ALLANIME_KEY = 'a254aa27c410f297bd04ba33a0c0df7ff4e706bf3ae27271c6703f84e750f552';
-var ALLANIME_W = null; // cached key schedule
+var ALLANIME_W = null;
 var ALLANIME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0';
+var AA_BUILD_ID = '12';
+var AA_MASK = '78ebe40583e4f360cd9f56926b775a780054367c826123dcd0577a231eee4e73';
+var AA_BOOTSTRAP_URL = 'https://api.allanime.day/client-crypto/v1/bootstrap?buildId=12';
 
 var SEARCH_HASH = 'a24c500a1b765c68ae1d8dd85174931f661c71369c89b92b88b75a725afc471c';
 var EPISODES_HASH = '043448386c7a686bc2aabfbb6b80f6074e795d350df48015023b079527b0848a';
@@ -54,11 +57,13 @@ var SBOX = [
     0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
 ];
 
+// aaReq bootstrap cache
+var aaBootstrap = null;
+var aaBootstrapPromise = null;
+
 function hexToBytes(hex) {
     var bytes = new Uint8Array(hex.length / 2);
-    for (var i = 0; i < hex.length; i += 2) {
-        bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
-    }
+    for (var i = 0; i < hex.length; i += 2) bytes[i/2] = parseInt(hex.substr(i,2),16);
     return bytes;
 }
 
@@ -77,112 +82,159 @@ function base64ToBytes(b64) {
     return output.slice(0, idx);
 }
 
-function xtime(a) { return ((a << 1) ^ (a & 0x80 ? 0x1b : 0)) & 0xff; }
-function aesSubBytes(s) { for (var i = 0; i < 16; i++) s[i] = SBOX[s[i]]; }
-function aesShiftRows(s) {
-    var t;
-    t=s[1];s[1]=s[5];s[5]=s[9];s[9]=s[13];s[13]=t;
-    t=s[2];s[2]=s[10];s[10]=t;t=s[6];s[6]=s[14];s[14]=t;
-    t=s[15];s[15]=s[11];s[11]=s[7];s[7]=s[3];s[3]=t;
-}
-function aesMixColumns(s) {
-    for (var i = 0; i < 16; i += 4) {
-        var s0=s[i],s1=s[i+1],s2=s[i+2],s3=s[i+3],h=s0^s1^s2^s3;
-        s[i]^=h^xtime(s0^s1);s[i+1]^=h^xtime(s1^s2);
-        s[i+2]^=h^xtime(s2^s3);s[i+3]^=h^xtime(s3^s0);
+function bytesToBase64(bytes) {
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var result = '';
+    for (var i = 0; i < bytes.length; i += 3) {
+        var b0 = bytes[i], b1 = bytes[i+1] || 0, b2 = bytes[i+2] || 0;
+        result += chars[b0 >> 2];
+        result += chars[((b0 & 3) << 4) | (b1 >> 4)];
+        result += i+1 < bytes.length ? chars[((b1 & 15) << 2) | (b2 >> 6)] : '=';
+        result += i+2 < bytes.length ? chars[b2 & 63] : '=';
     }
+    return result;
 }
-function aesAddRoundKey(s, w, r) { for (var i = 0; i < 16; i++) s[i] ^= w[r*16+i]; }
+
+// Pure JS AES for tobeparsed decryption
+function xtime(a) { return ((a<<1)^(a&0x80?0x1b:0))&0xff; }
+function aesSubBytes(s){for(var i=0;i<16;i++)s[i]=SBOX[s[i]];}
+function aesShiftRows(s){var t;t=s[1];s[1]=s[5];s[5]=s[9];s[9]=s[13];s[13]=t;t=s[2];s[2]=s[10];s[10]=t;t=s[6];s[6]=s[14];s[14]=t;t=s[15];s[15]=s[11];s[11]=s[7];s[7]=s[3];s[3]=t;}
+function aesMixColumns(s){for(var i=0;i<16;i+=4){var s0=s[i],s1=s[i+1],s2=s[i+2],s3=s[i+3],h=s0^s1^s2^s3;s[i]^=h^xtime(s0^s1);s[i+1]^=h^xtime(s1^s2);s[i+2]^=h^xtime(s2^s3);s[i+3]^=h^xtime(s3^s0);}}
+function aesAddRoundKey(s,w,r){for(var i=0;i<16;i++)s[i]^=w[r*16+i];}
 
 function aesKeyExpansion(key) {
-    var RCON = [0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36];
-    var w = new Uint8Array(240);
-    w.set(key);
-    for (var i = 8; i < 60; i++) {
-        var t = w.slice((i-1)*4, i*4);
-        if (i % 8 === 0) t = new Uint8Array([SBOX[t[1]]^RCON[i/8-1],SBOX[t[2]],SBOX[t[3]],SBOX[t[0]]]);
-        else if (i % 8 === 4) t = new Uint8Array([SBOX[t[0]],SBOX[t[1]],SBOX[t[2]],SBOX[t[3]]]);
-        for (var j = 0; j < 4; j++) w[i*4+j] = w[(i-8)*4+j] ^ t[j];
-    }
+    var RCON=[0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36];
+    var w=new Uint8Array(240); w.set(key);
+    for(var i=8;i<60;i++){var t=w.slice((i-1)*4,i*4);
+    if(i%8===0)t=new Uint8Array([SBOX[t[1]]^RCON[i/8-1],SBOX[t[2]],SBOX[t[3]],SBOX[t[0]]]);
+    else if(i%8===4)t=new Uint8Array([SBOX[t[0]],SBOX[t[1]],SBOX[t[2]],SBOX[t[3]]]);
+    for(var j=0;j<4;j++)w[i*4+j]=w[(i-8)*4+j]^t[j];}
     return w;
 }
 
 function aesEncryptBlock(block, w) {
-    var s = new Uint8Array(block);
-    aesAddRoundKey(s, w, 0);
-    for (var r = 1; r < 14; r++) { aesSubBytes(s); aesShiftRows(s); aesMixColumns(s); aesAddRoundKey(s, w, r); }
-    aesSubBytes(s); aesShiftRows(s); aesAddRoundKey(s, w, 14);
-    return s;
+    var s=new Uint8Array(block); aesAddRoundKey(s,w,0);
+    for(var r=1;r<14;r++){aesSubBytes(s);aesShiftRows(s);aesMixColumns(s);aesAddRoundKey(s,w,r);}
+    aesSubBytes(s);aesShiftRows(s);aesAddRoundKey(s,w,14); return s;
 }
 
 function aesGcmDecrypt(ciphertextWithTag, keyHex, iv) {
-    if (!ALLANIME_W) ALLANIME_W = aesKeyExpansion(hexToBytes(keyHex));
-    var w = ALLANIME_W;
-    var ctLen = ciphertextWithTag.length - 16;
-    var ciphertext = ciphertextWithTag.slice(0, ctLen);
-    var j0 = new Uint8Array(16);
-    for (var i = 0; i < 12; i++) j0[i] = iv[i];
-    j0[15] = 1;
-    var plaintext = new Uint8Array(ciphertext.length);
-    for (var pos = 0; pos < ciphertext.length; pos += 16) {
-        var ctr = new Uint8Array(j0);
-        var blockNum = Math.floor(pos / 16) + 2;
-        ctr[12] = (blockNum >>> 24) & 0xff;
-        ctr[13] = (blockNum >>> 16) & 0xff;
-        ctr[14] = (blockNum >>> 8) & 0xff;
-        ctr[15] = blockNum & 0xff;
-        var keystream = aesEncryptBlock(ctr, w);
-        var blockSize = Math.min(16, ciphertext.length - pos);
-        for (var k = 0; k < blockSize; k++) plaintext[pos+k] = ciphertext[pos+k] ^ keystream[k];
+    if(!ALLANIME_W) ALLANIME_W = aesKeyExpansion(hexToBytes(keyHex));
+    var w=ALLANIME_W, ctLen=ciphertextWithTag.length-16, ciphertext=ciphertextWithTag.slice(0,ctLen);
+    var j0=new Uint8Array(16); for(var i=0;i<12;i++)j0[i]=iv[i]; j0[15]=1;
+    var plaintext=new Uint8Array(ciphertext.length);
+    for(var pos=0;pos<ciphertext.length;pos+=16){
+        var ctr=new Uint8Array(j0), blockNum=Math.floor(pos/16)+2;
+        ctr[12]=(blockNum>>>24)&0xff;ctr[13]=(blockNum>>>16)&0xff;ctr[14]=(blockNum>>>8)&0xff;ctr[15]=blockNum&0xff;
+        var keystream=aesEncryptBlock(ctr,w), blockSize=Math.min(16,ciphertext.length-pos);
+        for(var k=0;k<blockSize;k++)plaintext[pos+k]=ciphertext[pos+k]^keystream[k];
     }
     return plaintext;
 }
 
 function decodeTobeparsed(tobeparsed) {
     try {
-        var b64 = tobeparsed;
-        var pad = b64.length % 4;
-        if (pad) b64 += '===='.slice(pad);
-        var data = base64ToBytes(b64);
-        var iv = data.slice(1, 13);
-        var ciphertextWithTag = data.slice(13);
-        var plaintext = aesGcmDecrypt(ciphertextWithTag, ALLANIME_KEY, iv);
-        var result = '';
-        for (var i = 0; i < plaintext.length; i++) result += String.fromCharCode(plaintext[i]);
-        try { return decodeURIComponent(escape(result)); } catch(e) { return result; }
+        var b64=tobeparsed, pad=b64.length%4;
+        if(pad) b64+='===='.slice(pad);
+        var data=base64ToBytes(b64), iv=data.slice(1,13), ct=data.slice(13);
+        var plain=aesGcmDecrypt(ct,ALLANIME_KEY,iv);
+        var result=''; for(var i=0;i<plain.length;i++) result+=String.fromCharCode(plain[i]);
+        try{return decodeURIComponent(escape(result));}catch(e){return result;}
+    } catch(e) { return null; }
+}
+
+function decodeProviderUrl(encoded) {
+    if(encoded.indexOf('--')!==0) return encoded;
+    var hex=encoded.slice(2), result='';
+    for(var i=0;i<hex.length;i+=2) result+=HEX_MAP[hex.substr(i,2)]||'';
+    return result.replace('/clock','/clock.json');
+}
+
+async function soraFetch(url, options) {
+    options = options || { headers:{}, method:'GET', body:null };
+    try {
+        if(typeof fetchv2!=='undefined') return await fetchv2(url,options.headers||{},options.method||'GET',options.body||null,true,options.encoding||'utf-8');
+        return await fetch(url, options);
+    } catch(e) { try{return await fetch(url,options);}catch(err){return null;} }
+}
+
+// aaReq generation using crypto.subtle (available in WKWebView/JSCore on iOS)
+async function sha256Bytes(data) {
+    var buf = await crypto.subtle.digest('SHA-256', data);
+    return new Uint8Array(buf);
+}
+
+async function fetchBootstrap() {
+    try {
+        var res = await soraFetch(AA_BOOTSTRAP_URL, {
+            method: 'GET',
+            headers: { 'User-Agent': ALLANIME_UA, 'x-build-id': AA_BUILD_ID, 'Origin': ALLANIME_REFR, 'Referer': ALLANIME_REFR + '/' }
+        });
+        if (!res) return null;
+        var text = typeof res.text === 'function' ? await res.text() : null;
+        if (!text) return null;
+        var json = JSON.parse(text);
+        if (json && json.partB && typeof json.epoch === 'number') return json;
+        return null;
+    } catch(e) { return null; }
+}
+
+async function getBootstrap() {
+    if (aaBootstrap && typeof aaBootstrap.epoch === 'number') return aaBootstrap;
+    if (!aaBootstrapPromise) aaBootstrapPromise = fetchBootstrap().then(function(b) { aaBootstrap = b; aaBootstrapPromise = null; return b; });
+    return aaBootstrapPromise;
+}
+
+async function deriveAaKey(bootstrap) {
+    try {
+        var maskBytes = hexToBytes(AA_MASK);
+        var partBBytes = base64ToBytes(bootstrap.partB);
+        var key = new Uint8Array(32);
+        for (var i = 0; i < 32; i++) key[i] = partBBytes[i] ^ maskBytes[i % maskBytes.length];
+        return await crypto.subtle.importKey('raw', key, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+    } catch(e) { return null; }
+}
+
+async function buildAaReq(queryHash) {
+    try {
+        var bootstrap = await getBootstrap();
+        if (!bootstrap) return null;
+        var cryptoKey = await deriveAaKey(bootstrap);
+        if (!cryptoKey) return null;
+        var interval = 5 * 60 * 1000;
+        var ts = Math.floor(Date.now() / interval) * interval;
+        var epoch = bootstrap.epoch;
+        // IV = SHA-256("epoch:buildId:queryHash:ts")[:12]
+        var ivInput = new TextEncoder().encode(epoch + ':' + AA_BUILD_ID + ':' + queryHash + ':' + ts);
+        var ivFull = await sha256Bytes(ivInput);
+        var iv = ivFull.slice(0, 12);
+        // Payload
+        var payload = JSON.stringify({ v: 1, ts: ts, epoch: epoch, buildId: AA_BUILD_ID, qh: queryHash });
+        var plaintext = new TextEncoder().encode(payload);
+        // Encrypt
+        var ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, cryptoKey, plaintext);
+        var ct = new Uint8Array(ciphertext);
+        // Assemble: [1][iv(12)][ciphertext]
+        var result = new Uint8Array(1 + 12 + ct.length);
+        result[0] = 1;
+        result.set(iv, 1);
+        result.set(ct, 13);
+        // base64 encode
+        return bytesToBase64(result);
     } catch(e) {
-        console.log('decodeTobeparsed error: ' + e);
+        console.log('buildAaReq error: ' + e);
         return null;
     }
 }
 
-function decodeProviderUrl(encoded) {
-    if (encoded.indexOf('--') !== 0) return encoded;
-    var hex = encoded.slice(2);
-    var result = '';
-    for (var i = 0; i < hex.length; i += 2) {
-        var byte = hex.substr(i, 2);
-        result += HEX_MAP[byte] || '';
-    }
-    return result.replace('/clock', '/clock.json');
-}
-
-async function soraFetch(url, options) {
-    options = options || { headers: {}, method: 'GET', body: null };
-    try {
-        if (typeof fetchv2 !== 'undefined') {
-            return await fetchv2(url, options.headers || {}, options.method || 'GET', options.body || null, true, options.encoding || 'utf-8');
-        } else {
-            return await fetch(url, options);
-        }
-    } catch(e) {
-        try { return await fetch(url, options); } catch(err) { return null; }
-    }
-}
-
-async function allanimeGet(variables, hash, customHeaders) {
+async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
     var encoded = encodeURIComponent(JSON.stringify(variables));
-    var ext = encodeURIComponent(JSON.stringify({ persistedQuery: { version: 1, sha256Hash: hash } }));
+    var extObj = { persistedQuery: { version: 1, sha256Hash: hash } };
+    if (includeAaReq) {
+        var aaReq = await buildAaReq(hash);
+        if (aaReq) extObj.aaReq = aaReq;
+    }
+    var ext = encodeURIComponent(JSON.stringify(extObj));
     var url = ALLANIME_API + '?variables=' + encoded + '&extensions=' + ext;
     var headers = customHeaders || HEADERS;
     try {
@@ -191,10 +243,7 @@ async function allanimeGet(variables, hash, customHeaders) {
         var text = typeof res.text === 'function' ? await res.text() : null;
         if (!text || text.trim().indexOf('<') === 0) return null;
         return JSON.parse(text);
-    } catch(e) {
-        console.log('AllManga API error: ' + e);
-        return null;
-    }
+    } catch(e) { return null; }
 }
 
 async function resolveStreamUrl(source) {
@@ -204,15 +253,10 @@ async function resolveStreamUrl(source) {
         if (!decoded) return null;
         if (decoded.indexOf('/') === 0) decoded = 'https://allanime.day' + decoded;
         if (decoded.indexOf('http') !== 0) return null;
-
         if (decoded.indexOf('clock.json') !== -1) {
             var fetchPromise = soraFetch(decoded, {
                 method: 'GET',
-                headers: {
-                    'User-Agent': ALLANIME_UA,
-                    'Referer': 'https://allanime.day/player.html',
-                    'Origin': 'https://allanime.day'
-                }
+                headers: { 'User-Agent': ALLANIME_UA, 'Referer': ALLANIME_REFR + '/', 'Origin': ALLANIME_REFR }
             });
             var timeoutPromise = new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 8000); });
             var res = await Promise.race([fetchPromise, timeoutPromise]);
@@ -221,100 +265,64 @@ async function resolveStreamUrl(source) {
             if (!text) return null;
             var json = JSON.parse(text);
             if (json && json.links && json.links.length > 0) {
-                return {
-                    title: source.sourceName || 'Server',
-                    streamUrl: json.links[0].link,
-                    headers: { 'Referer': ALLANIME_REFR + '/' }
-                };
+                return { title: source.sourceName || 'Server', streamUrl: json.links[0].link, headers: { 'Referer': ALLANIME_REFR + '/' } };
             }
             return null;
         }
-
-        // Direct URL (e.g. Yt-mp4 fast4speed)
-        return {
-            title: source.sourceName || 'Server',
-            streamUrl: decoded,
-            headers: { 'Referer': ALLANIME_REFR + '/' }
-        };
-    } catch(e) {
-        return null;
-    }
+        return { title: source.sourceName || 'Server', streamUrl: decoded, headers: { 'Referer': ALLANIME_REFR + '/' } };
+    } catch(e) { return null; }
 }
 
 async function searchResults(keyword) {
     try {
         var variables = { search: { query: keyword }, limit: 26, page: 1, translationType: 'dub', countryOrigin: 'ALL' };
-        var data = await allanimeGet(variables, SEARCH_HASH);
+        var data = await allanimeGet(variables, SEARCH_HASH, HEADERS, false);
         if (!data || !data.data || !data.data.shows || !data.data.shows.edges) return JSON.stringify([]);
-        var results = [];
-        var edges = data.data.shows.edges;
+        var results = [], edges = data.data.shows.edges;
         for (var i = 0; i < edges.length; i++) {
             var show = edges[i];
             if (!show.availableEpisodes || !show.availableEpisodes.dub || show.availableEpisodes.dub === 0) continue;
-            results.push({
-                title: show.englishName || show.name || 'Unknown',
-                image: show.thumbnail || '',
-                href: show._id
-            });
+            results.push({ title: show.englishName || show.name || 'Unknown', image: show.thumbnail || '', href: show._id });
         }
         return JSON.stringify(results);
-    } catch(e) {
-        console.log('searchResults error: ' + e);
-        return JSON.stringify([]);
-    }
+    } catch(e) { return JSON.stringify([]); }
 }
 
 async function extractDetails(showId) {
     try {
         var variables = { _id: showId };
-        var data = await allanimeGet(variables, EPISODES_HASH);
-        if (!data || !data.data || !data.data.show) {
-            return JSON.stringify([{ description: 'No description available', aliases: 'N/A', airdate: 'N/A' }]);
-        }
+        var data = await allanimeGet(variables, EPISODES_HASH, HEADERS, false);
+        if (!data || !data.data || !data.data.show) return JSON.stringify([{ description: 'No description available', aliases: 'N/A', airdate: 'N/A' }]);
         var show = data.data.show;
-        var description = show.description
-            ? show.description.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&#xE9;/g, 'é').trim()
-            : 'No description available';
+        var description = show.description ? show.description.replace(/<[^>]+>/g,'').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#039;/g,"'").trim() : 'No description available';
         var year = show.airedStart && show.airedStart.year ? String(show.airedStart.year) : 'N/A';
         var score = show.averageScore ? show.averageScore + '/100' : 'N/A';
         return JSON.stringify([{ description: description, aliases: 'Score: ' + score, airdate: 'Year: ' + year }]);
-    } catch(e) {
-        console.log('extractDetails error: ' + e);
-        return JSON.stringify([{ description: 'No description available', aliases: 'N/A', airdate: 'N/A' }]);
-    }
+    } catch(e) { return JSON.stringify([{ description: 'No description available', aliases: 'N/A', airdate: 'N/A' }]); }
 }
 
 async function extractEpisodes(showId) {
     try {
         var variables = { _id: showId };
-        var data = await allanimeGet(variables, EPISODES_HASH);
+        var data = await allanimeGet(variables, EPISODES_HASH, HEADERS, false);
         if (!data || !data.data || !data.data.show) return JSON.stringify([]);
         var dubEpisodes = (data.data.show.availableEpisodesDetail && data.data.show.availableEpisodesDetail.dub) || [];
         if (!dubEpisodes.length) return JSON.stringify([]);
         var parsed = [];
-        for (var i = 0; i < dubEpisodes.length; i++) {
-            var n = parseFloat(dubEpisodes[i]);
-            if (!isNaN(n)) parsed.push(n);
-        }
-        parsed.sort(function(a, b) { return a - b; });
+        for (var i = 0; i < dubEpisodes.length; i++) { var n = parseFloat(dubEpisodes[i]); if (!isNaN(n)) parsed.push(n); }
+        parsed.sort(function(a,b){return a-b;});
         var results = [];
-        for (var j = 0; j < parsed.length; j++) {
-            results.push({ href: showId + '|' + parsed[j], number: parsed[j] });
-        }
+        for (var j = 0; j < parsed.length; j++) results.push({ href: showId + '|' + parsed[j], number: parsed[j] });
         return JSON.stringify(results);
-    } catch(e) {
-        console.log('extractEpisodes error: ' + e);
-        return JSON.stringify([]);
-    }
+    } catch(e) { return JSON.stringify([]); }
 }
 
 async function extractStreamUrl(slug) {
     try {
         var parts = slug.split('|');
-        var showId = parts[0];
-        var epNumber = parts[1];
+        var showId = parts[0], epNumber = parts[1];
         var variables = { showId: showId, translationType: 'dub', episodeString: String(epNumber) };
-        var data = await allanimeGet(variables, SOURCES_HASH, SOURCES_HEADERS);
+        var data = await allanimeGet(variables, SOURCES_HASH, SOURCES_HEADERS, true);
         if (!data || !data.data) return JSON.stringify({ streams: [], subtitles: [] });
 
         var sourceUrls = [];
@@ -323,19 +331,14 @@ async function extractStreamUrl(slug) {
                 var decrypted = decodeTobeparsed(data.data.tobeparsed);
                 var parsed = JSON.parse(decrypted);
                 sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
-            } catch(e) {
-                console.log('Decryption parse error: ' + e);
-            }
+            } catch(e) {}
         } else if (data.data.episode && data.data.episode.sourceUrls) {
             sourceUrls = data.data.episode.sourceUrls;
         }
 
         if (!sourceUrls.length) return JSON.stringify({ streams: [], subtitles: [] });
 
-        // Only keep -- encoded sources (resolve via clock.json to real HLS)
-        // Deduplicate by sourceUrl to avoid hitting same endpoint multiple times
-        var validSources = [];
-        var seenUrls = {};
+        var validSources = [], seenUrls = {};
         for (var i = 0; i < sourceUrls.length; i++) {
             var src = sourceUrls[i];
             if (!src.sourceUrl) continue;
@@ -345,21 +348,12 @@ async function extractStreamUrl(slug) {
             validSources.push(src);
         }
 
-        // Parallel fetch all sources
         var promises = [];
-        for (var i = 0; i < validSources.length; i++) {
-            promises.push(resolveStreamUrl(validSources[i]));
-        }
+        for (var i = 0; i < validSources.length; i++) promises.push(resolveStreamUrl(validSources[i]));
         var results = await Promise.all(promises);
 
         var streams = [];
-        for (var i = 0; i < results.length; i++) {
-            if (results[i]) streams.push(results[i]);
-        }
-
+        for (var i = 0; i < results.length; i++) { if (results[i]) streams.push(results[i]); }
         return JSON.stringify({ streams: streams, subtitles: [] });
-    } catch(e) {
-        console.log('extractStreamUrl error: ' + e);
-        return JSON.stringify({ streams: [], subtitles: [] });
-    }
+    } catch(e) { return JSON.stringify({ streams: [], subtitles: [] }); }
 }
