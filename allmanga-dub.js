@@ -442,7 +442,9 @@ async function extractStreamUrl(slug) {
                 var decrypted = decodeTobeparsed(data.data.tobeparsed);
                 var parsed = JSON.parse(decrypted);
                 sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
-            } catch(e) {}
+                console.log('[AM] decrypted sourceUrls count=' + sourceUrls.length);
+                if (sourceUrls.length > 0) console.log('[AM] sources: ' + sourceUrls.map(function(s){return s.sourceName+':'+((s.sourceUrl||'').substring(0,10));}).join(', '));
+            } catch(e) { console.log('[AM] decrypt error: ' + e); }
         } else if (data.data.episode && data.data.episode.sourceUrls) {
             sourceUrls = data.data.episode.sourceUrls;
         }
