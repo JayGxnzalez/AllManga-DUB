@@ -352,8 +352,9 @@ async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
         if (!res) return null;
         var text = typeof res.text === 'function' ? await res.text() : null;
         if (!text || text.trim().indexOf('<') === 0) return null;
+        if (includeAaReq) console.log('[AM] sources response: ' + text.substring(0, 150));
         return JSON.parse(text);
-    } catch(e) { return null; }
+    } catch(e) { if (includeAaReq) console.log('[AM] allanimeGet error: ' + e); return null; }
 }
 
 async function resolveStreamUrl(source) {
