@@ -2,7 +2,7 @@
 // Pure JS AES-256-GCM decryption + clock.json resolution
 
 var ALLANIME_API = 'https://api.allanime.day/api';
-var ALLANIME_REFR = 'https://allmanga.to';
+var ALLANIME_REFR = 'https://mkissa.to';
 var ALLANIME_KEY = 'a254aa27c410f297bd04ba33a0c0df7ff4e706bf3ae27271c6703f84e750f552';
 var ALLANIME_W = null; // cached key schedule
 var ALLANIME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0';
