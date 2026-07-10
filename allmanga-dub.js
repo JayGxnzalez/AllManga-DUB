@@ -208,7 +208,7 @@ async function fetchCreds() {
             return null;
         }
 
-        console.log('fetchCreds: epoch=' + epoch + ' buildId=' + buildId + ' mask=' + mask.substring(0,16) + '...');
+        console.log('fetchCreds: epoch=' + epoch + ' buildId=' + buildId + ' mask=' + mask + ' partB=' + partB.substring(0,20));
         return { epoch: epoch, partB: partB, mask: mask, buildId: buildId };
     } catch(e) {
         console.log('fetchCreds error: ' + e);
