@@ -6,10 +6,6 @@ var ALLANIME_REFR = 'https://mkissa.to';
 var ALLANIME_KEY = 'a254aa27c410f297bd04ba33a0c0df7ff4e706bf3ae27271c6703f84e750f552';
 var ALLANIME_W = null;
 var ALLANIME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0';
-var AA_BUILD_ID = '12';
-var AA_MASK = '78ebe40583e4f360cd9f56926b775a780054367c826123dcd0577a231eee4e73';
-var AA_BOOTSTRAP_URL = 'https://api.allanime.day/client-crypto/v1/bootstrap?buildId=12';
-
 var SEARCH_HASH = 'a24c500a1b765c68ae1d8dd85174931f661c71369c89b92b88b75a725afc471c';
 var EPISODES_HASH = '043448386c7a686bc2aabfbb6b80f6074e795d350df48015023b079527b0848a';
 var SOURCES_HASH = 'd405d0edd690624b66baba3068e0edc3ac90f1597d898a1ec8db4e5c43c00fec';
@@ -57,9 +53,10 @@ var SBOX = [
     0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
 ];
 
-// aaReq bootstrap cache
-var aaBootstrap = null;
-var aaBootstrapPromise = null;
+// aaReq credential cache
+var aaCreds = null;
+var aaCredsTime = 0;
+var aaCredsPromise = null;
 
 function hexToBytes(hex) {
     var bytes = new Uint8Array(hex.length / 2);
@@ -159,67 +156,180 @@ async function soraFetch(url, options) {
 }
 
 // aaReq generation using crypto.subtle (available in WKWebView/JSCore on iOS)
-async function sha256Bytes(data) {
-    var buf = await crypto.subtle.digest('SHA-256', data);
-    return new Uint8Array(buf);
-}
-
-async function fetchBootstrap() {
+async function fetchCreds() {
     try {
-        var res = await soraFetch(AA_BOOTSTRAP_URL, {
-            method: 'GET',
-            headers: { 'User-Agent': ALLANIME_UA, 'x-build-id': AA_BUILD_ID, 'Origin': ALLANIME_REFR, 'Referer': ALLANIME_REFR + '/' }
-        });
+        // Step 1: Scrape mkissa.to for epoch and partB
+        var res = await soraFetch(ALLANIME_REFR, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
         if (!res) return null;
-        var text = typeof res.text === 'function' ? await res.text() : null;
-        if (!text) return null;
-        var json = JSON.parse(text);
-        if (json && json.partB && typeof json.epoch === 'number') return json;
+        var html = typeof res.text === 'function' ? await res.text() : null;
+        if (!html) return null;
+
+        var epochMatch = html.match(/"epoch":(\d+)/);
+        var epoch = epochMatch ? epochMatch[1] : null;
+        var partBMatch = html.match(/"partB":"([^"]+)"/);
+        var partB = partBMatch ? partBMatch[1] : null;
+
+        // Step 2: Get app JS URL from HTML
+        var appjsMatch = html.match(/https:\/\/cdn\.allanime\.day\/all\/mk\/_app\/immutable\/entry\/app\.[^"']+\.js/);
+        var appjsUrl = appjsMatch ? appjsMatch[0] : null;
+
+        if (!epoch || !partB || !appjsUrl) {
+            console.log('fetchCreds: missing epoch/partB/appjs');
+            return null;
+        }
+
+        // Step 3: Get chunk path from app.js
+        var appRes = await soraFetch(appjsUrl, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
+        if (!appRes) return null;
+        var appText = typeof appRes.text === 'function' ? await appRes.text() : null;
+        if (!appText) return null;
+
+        var chunkMatch = appText.match(/from\s*["']\.\.(\/chunks\/[^"'\s]+?\.[a-z0-9]+)["']\s*;\s*import/i);
+        var chunkPath = chunkMatch ? chunkMatch[1] : null;
+        if (!chunkPath) {
+            console.log('fetchCreds: missing chunk path');
+            return null;
+        }
+
+        // Step 4: Get mask and buildId from chunk JS
+        var chunkUrl = 'https://cdn.allanime.day/all/mk/_app/immutable' + chunkPath;
+        var chunkRes = await soraFetch(chunkUrl, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
+        if (!chunkRes) return null;
+        var chunkText = typeof chunkRes.text === 'function' ? await chunkRes.text() : null;
+        if (!chunkText) return null;
+
+        var maskMatch = chunkText.match(/[0-9a-f]{64}/i);
+        var mask = maskMatch ? maskMatch[0] : null;
+        var buildIdMatch = chunkText.match(/[0-9a-f]{64}[^;]*?"(\d+)"/i);
+        var buildId = buildIdMatch ? buildIdMatch[1] : null;
+
+        if (!mask || !buildId) {
+            console.log('fetchCreds: missing mask/buildId');
+            return null;
+        }
+
+        console.log('fetchCreds: epoch=' + epoch + ' buildId=' + buildId);
+        return { epoch: epoch, partB: partB, mask: mask, buildId: buildId };
+    } catch(e) {
+        console.log('fetchCreds error: ' + e);
         return null;
-    } catch(e) { return null; }
+    }
 }
 
-async function getBootstrap() {
-    if (aaBootstrap && typeof aaBootstrap.epoch === 'number') return aaBootstrap;
-    if (!aaBootstrapPromise) aaBootstrapPromise = fetchBootstrap().then(function(b) { aaBootstrap = b; aaBootstrapPromise = null; return b; });
-    return aaBootstrapPromise;
+async function getCreds() {
+    var now = Date.now();
+    if (aaCreds && (now - aaCredsTime < 300000)) return aaCreds;
+    if (!aaCredsPromise) {
+        aaCredsPromise = fetchCreds().then(function(c) {
+            if (c) { aaCreds = c; aaCredsTime = Date.now(); }
+            aaCredsPromise = null;
+            return c;
+        });
+    }
+    return aaCredsPromise;
 }
 
-async function deriveAaKey(bootstrap) {
+function deriveAaKey(creds) {
     try {
-        var maskBytes = hexToBytes(AA_MASK);
-        var partBBytes = base64ToBytes(bootstrap.partB);
+        var maskBytes = hexToBytes(creds.mask);
+        var partBBytes = base64ToBytes(creds.partB);
         var key = new Uint8Array(32);
         for (var i = 0; i < 32; i++) key[i] = partBBytes[i] ^ maskBytes[i % maskBytes.length];
-        return await crypto.subtle.importKey('raw', key, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+        return key;
     } catch(e) { return null; }
+}
+
+function puresha256(strInput) {
+    var bytes = stringToUtf8Bytes(strInput);
+    var hash = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+    var k = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+    var l = bytes.length;
+    var words = new Uint32Array((((l+8)>>6)+1)<<4);
+    for(var i=0;i<l;i++) words[i>>2]|=bytes[i]<<(24-(i&3)*8);
+    words[l>>2]|=0x80<<(24-(l&3)*8);
+    words[words.length-1]=l*8;
+    var w=new Uint32Array(64);
+    for(var i=0;i<words.length;i+=16){
+        for(var j=0;j<16;j++) w[j]=words[i+j];
+        for(var j=16;j<64;j++){var s0=((w[j-15]>>>7)|(w[j-15]<<25))^((w[j-15]>>>18)|(w[j-15]<<14))^(w[j-15]>>>3);var s1=((w[j-2]>>>17)|(w[j-2]<<15))^((w[j-2]>>>19)|(w[j-2]<<13))^(w[j-2]>>>10);w[j]=w[j-16]+s0+w[j-7]+s1;}
+        var a=hash[0],b=hash[1],c=hash[2],d=hash[3],e=hash[4],f=hash[5],g=hash[6],h=hash[7];
+        for(var j=0;j<64;j++){var S1=((e>>>6)|(e<<26))^((e>>>11)|(e<<21))^((e>>>25)|(e<<7));var ch=(e&f)^(~e&g);var t1=h+S1+ch+k[j]+w[j];var S0=((a>>>2)|(a<<30))^((a>>>13)|(a<<19))^((a>>>22)|(a<<10));var maj=(a&b)^(a&c)^(b&c);var t2=S0+maj;h=g;g=f;f=e;e=(d+t1)|0;d=c;c=b;b=a;a=(t1+t2)|0;}
+        hash[0]=(hash[0]+a)|0;hash[1]=(hash[1]+b)|0;hash[2]=(hash[2]+c)|0;hash[3]=(hash[3]+d)|0;hash[4]=(hash[4]+e)|0;hash[5]=(hash[5]+f)|0;hash[6]=(hash[6]+g)|0;hash[7]=(hash[7]+h)|0;
+    }
+    var result=new Uint8Array(32);
+    for(var i=0;i<8;i++){result[i*4]=hash[i]>>>24;result[i*4+1]=hash[i]>>>16;result[i*4+2]=hash[i]>>>8;result[i*4+3]=hash[i];}
+    return result;
+}
+
+function stringToUtf8Bytes(str) {
+    var bytes = [];
+    for (var i = 0; i < str.length; i++) {
+        var code = str.charCodeAt(i);
+        if (code < 0x80) bytes.push(code);
+        else if (code < 0x800) bytes.push(0xc0|(code>>6), 0x80|(code&0x3f));
+        else bytes.push(0xe0|(code>>12), 0x80|((code>>6)&0x3f), 0x80|(code&0x3f));
+    }
+    return new Uint8Array(bytes);
+}
+
+function aesGcmEncryptPure(key, iv, plaintext) {
+    var w = aesKeyExpansion(key);
+    var H = aesEncryptBlock(new Uint8Array(16), w);
+    var j0 = new Uint8Array(16);
+    for (var i = 0; i < 12; i++) j0[i] = iv[i];
+    j0[15] = 1;
+    var ct = new Uint8Array(plaintext.length);
+    var counter = new Uint8Array(j0);
+    for (var i = 0; i < plaintext.length; i += 16) {
+        // increment counter
+        for (var c = 15; c >= 12; c--) { if (counter[c] === 255) counter[c] = 0; else { counter[c]++; break; } }
+        var ks = aesEncryptBlock(counter, w);
+        var chunk = Math.min(16, plaintext.length - i);
+        for (var j = 0; j < chunk; j++) ct[i+j] = plaintext[i+j] ^ ks[j];
+    }
+    // GHASH for tag
+    var ctLen = ct.length, adLen = 0;
+    var adPad = (16 - (adLen%16))%16, ctPad = (16 - (ctLen%16))%16;
+    var ghIn = new Uint8Array(adLen+adPad+ctLen+ctPad+16);
+    ghIn.set(ct, adLen+adPad);
+    var lo = adLen+adPad+ctLen+ctPad;
+    var ctBits = ctLen*8;
+    ghIn[lo+12]=ctBits>>>24;ghIn[lo+13]=(ctBits>>>16)&0xff;ghIn[lo+14]=(ctBits>>>8)&0xff;ghIn[lo+15]=ctBits&0xff;
+    // gf2_128_mul
+    function gfmul(x,y){var r=new Uint8Array(16),v=new Uint8Array(x);for(var i=0;i<128;i++){var bit=(y[i>>3]>>>(7-(i&7)))&1;if(bit)for(var j=0;j<16;j++)r[j]^=v[j];var carry=v[15]&1;for(var j=15;j>0;j--)v[j]=(v[j]>>>1)|((v[j-1]&1)<<7);v[0]=v[0]>>>1;if(carry)v[0]^=0xe1;}return r;}
+    var Y=new Uint8Array(16);
+    for(var i=0;i<ghIn.length;i+=16){for(var j=0;j<16;j++)Y[j]^=ghIn[i+j];Y=gfmul(Y,H);}
+    var j0enc=aesEncryptBlock(j0,w);
+    var tag=new Uint8Array(16);
+    for(var j=0;j<16;j++) tag[j]=Y[j]^j0enc[j];
+    // result: ct + tag
+    var out=new Uint8Array(ct.length+16);
+    out.set(ct);out.set(tag,ct.length);
+    return out;
 }
 
 async function buildAaReq(queryHash) {
     try {
-        var bootstrap = await getBootstrap();
-        if (!bootstrap) return null;
-        var cryptoKey = await deriveAaKey(bootstrap);
-        if (!cryptoKey) return null;
+        var creds = await getCreds();
+        if (!creds) return null;
+        var rawKey = deriveAaKey(creds);
+        if (!rawKey) return null;
         var interval = 5 * 60 * 1000;
         var ts = Math.floor(Date.now() / interval) * interval;
-        var epoch = bootstrap.epoch;
+        var epoch = creds.epoch;
+        var buildId = creds.buildId;
         // IV = SHA-256("epoch:buildId:queryHash:ts")[:12]
-        var ivInput = new TextEncoder().encode(epoch + ':' + AA_BUILD_ID + ':' + queryHash + ':' + ts);
-        var ivFull = await sha256Bytes(ivInput);
-        var iv = ivFull.slice(0, 12);
+        var iv = puresha256(epoch + ':' + buildId + ':' + queryHash + ':' + ts).slice(0, 12);
         // Payload
-        var payload = JSON.stringify({ v: 1, ts: ts, epoch: epoch, buildId: AA_BUILD_ID, qh: queryHash });
-        var plaintext = new TextEncoder().encode(payload);
-        // Encrypt
-        var ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, cryptoKey, plaintext);
-        var ct = new Uint8Array(ciphertext);
-        // Assemble: [1][iv(12)][ciphertext]
-        var result = new Uint8Array(1 + 12 + ct.length);
+        var payload = JSON.stringify({ v: 1, ts: ts, epoch: parseInt(epoch), buildId: String(buildId), qh: queryHash });
+        var plaintext = stringToUtf8Bytes(payload);
+        // Encrypt with pure JS AES-GCM
+        var ctWithTag = aesGcmEncryptPure(rawKey, iv, plaintext);
+        // Assemble: [1][iv(12)][ciphertext+tag]
+        var result = new Uint8Array(1 + 12 + ctWithTag.length);
         result[0] = 1;
         result.set(iv, 1);
-        result.set(ct, 13);
-        // base64 encode
+        result.set(ctWithTag, 13);
         return bytesToBase64(result);
     } catch(e) {
         console.log('buildAaReq error: ' + e);
