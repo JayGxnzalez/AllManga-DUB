@@ -436,23 +436,10 @@ async function extractStreamUrl(slug) {
         var data = await allanimeGet(variables, SOURCES_HASH, SOURCES_HEADERS, true);
         if (!data || !data.data) return JSON.stringify({ streams: [], subtitles: [] });
 
-        // Get derived key for decryption
-        var derivedKeyHex = null;
-        try {
-            var creds = await getCreds();
-            if (creds) {
-                var rawKey = deriveAaKey(creds);
-                if (rawKey) {
-                    derivedKeyHex = '';
-                    for (var ki = 0; ki < rawKey.length; ki++) derivedKeyHex += ('0' + rawKey[ki].toString(16)).slice(-2);
-                }
-            }
-        } catch(e) {}
-
         var sourceUrls = [];
         if (data.data._m && data.data.tobeparsed) {
             try {
-                var decrypted = decodeTobeparsed(data.data.tobeparsed, derivedKeyHex);
+                var decrypted = decodeTobeparsed(data.data.tobeparsed, null);
                 var parsed = JSON.parse(decrypted);
                 sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
                 console.log('[AM] decrypted sourceUrls count=' + sourceUrls.length);
