@@ -129,12 +129,12 @@ function aesGcmDecrypt(ciphertextWithTag, keyHex, iv) {
     return plaintext;
 }
 
-function decodeTobeparsed(tobeparsed) {
+function decodeTobeparsed(tobeparsed, keyHex) {
     try {
         var b64=tobeparsed, pad=b64.length%4;
         if(pad) b64+='===='.slice(pad);
         var data=base64ToBytes(b64), iv=data.slice(1,13), ct=data.slice(13);
-        var plain=aesGcmDecrypt(ct,ALLANIME_KEY,iv);
+        var plain=aesGcmDecrypt(ct, keyHex || ALLANIME_KEY, iv);
         var result=''; for(var i=0;i<plain.length;i++) result+=String.fromCharCode(plain[i]);
         try{return decodeURIComponent(escape(result));}catch(e){return result;}
     } catch(e) { return null; }
@@ -436,10 +436,23 @@ async function extractStreamUrl(slug) {
         var data = await allanimeGet(variables, SOURCES_HASH, SOURCES_HEADERS, true);
         if (!data || !data.data) return JSON.stringify({ streams: [], subtitles: [] });
 
+        // Get derived key for decryption
+        var derivedKeyHex = null;
+        try {
+            var creds = await getCreds();
+            if (creds) {
+                var rawKey = deriveAaKey(creds);
+                if (rawKey) {
+                    derivedKeyHex = '';
+                    for (var ki = 0; ki < rawKey.length; ki++) derivedKeyHex += ('0' + rawKey[ki].toString(16)).slice(-2);
+                }
+            }
+        } catch(e) {}
+
         var sourceUrls = [];
         if (data.data._m && data.data.tobeparsed) {
             try {
-                var decrypted = decodeTobeparsed(data.data.tobeparsed);
+                var decrypted = decodeTobeparsed(data.data.tobeparsed, derivedKeyHex);
                 var parsed = JSON.parse(decrypted);
                 sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
                 console.log('[AM] decrypted sourceUrls count=' + sourceUrls.length);
