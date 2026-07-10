@@ -164,10 +164,15 @@ async function fetchCreds() {
         var html = typeof res.text === 'function' ? await res.text() : null;
         if (!html) return null;
 
-        var epochMatch = html.match(/"epoch":(\d+)/);
-        var epoch = epochMatch ? epochMatch[1] : null;
-        var partBMatch = html.match(/"partB":"([^"]+)"/);
-        var partB = partBMatch ? partBMatch[1] : null;
+        // Get epoch and partB specifically from window.__aaCrypto
+        var aaCryptoMatch = html.match(/window\.__aaCrypto\s*=\s*(\{[^}]+\})/);
+        var epoch = null, partB = null;
+        if (aaCryptoMatch) {
+            var epochMatch = aaCryptoMatch[1].match(/"epoch"\s*:\s*(\d+)/);
+            epoch = epochMatch ? epochMatch[1] : null;
+            var partBMatch = aaCryptoMatch[1].match(/"partB"\s*:\s*"([^"]+)"/);
+            partB = partBMatch ? partBMatch[1] : null;
+        }
 
         // Step 2: Get app JS URL from HTML
         var appjsMatch = html.match(/https:\/\/cdn\.allanime\.day\/all\/mk\/_app\/immutable\/entry\/app\.[^"']+\.js/);
