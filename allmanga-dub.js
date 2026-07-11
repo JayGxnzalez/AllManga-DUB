@@ -158,28 +158,47 @@ async function soraFetch(url, options) {
 // aaReq generation using crypto.subtle (available in WKWebView/JSCore on iOS)
 async function fetchCreds() {
     try {
-        // Step 1: Scrape mkissa.to for epoch and partB
-        var res = await soraFetch(ALLANIME_REFR, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
-        if (!res) return null;
-        var html = typeof res.text === 'function' ? await res.text() : null;
-        if (!html) return null;
-
-        // Get epoch and partB specifically from window.__aaCrypto
-        var aaCryptoMatch = html.match(/window\.__aaCrypto\s*=\s*(\{[^}]+\})/);
+        // Step 1: Fetch partB and epoch from bootstrap endpoint
+        var bootstrapRes = await soraFetch('https://api.allanime.day/client-crypto/v1/bootstrap?buildId=13', {
+            method: 'GET',
+            headers: { 'User-Agent': ALLANIME_UA, 'x-build-id': '13', 'Origin': ALLANIME_REFR, 'Referer': ALLANIME_REFR + '/' }
+        });
         var epoch = null, partB = null;
-        if (aaCryptoMatch) {
-            var epochMatch = aaCryptoMatch[1].match(/"epoch"\s*:\s*(\d+)/);
-            epoch = epochMatch ? epochMatch[1] : null;
-            var partBMatch = aaCryptoMatch[1].match(/"partB"\s*:\s*"([^"]+)"/);
-            partB = partBMatch ? partBMatch[1] : null;
+        if (bootstrapRes) {
+            var bText = typeof bootstrapRes.text === 'function' ? await bootstrapRes.text() : null;
+            if (bText) {
+                try {
+                    var bJson = JSON.parse(bText);
+                    epoch = bJson.epoch !== undefined ? String(bJson.epoch) : null;
+                    partB = bJson.partB || null;
+                } catch(e) {}
+            }
         }
 
-        // Step 2: Get app JS URL from HTML
+        // Fallback: scrape mkissa.to HTML
+        if (!epoch || !partB) {
+            var res = await soraFetch(ALLANIME_REFR, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
+            if (res) {
+                var html = typeof res.text === 'function' ? await res.text() : null;
+                if (html) {
+                    var epochMatch = html.match(/"epoch":(\d+)/);
+                    if (!epoch) epoch = epochMatch ? epochMatch[1] : null;
+                    var partBMatch = html.match(/"partB":"([^"]+)"/);
+                    if (!partB) partB = partBMatch ? partBMatch[1] : null;
+                }
+            }
+        }
+
+        // Step 2: Get app JS URL from mkissa.to HTML
+        var htmlRes = await soraFetch(ALLANIME_REFR, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
+        if (!htmlRes) return null;
+        var html = typeof htmlRes.text === 'function' ? await htmlRes.text() : null;
+        if (!html) return null;
         var appjsMatch = html.match(/https:\/\/cdn\.allanime\.day\/all\/mk\/_app\/immutable\/entry\/app\.[^"']+\.js/);
         var appjsUrl = appjsMatch ? appjsMatch[0] : null;
 
         if (!epoch || !partB || !appjsUrl) {
-            console.log('fetchCreds: missing epoch/partB/appjs');
+            console.log('fetchCreds: missing epoch/partB/appjs epoch=' + epoch + ' partB=' + (partB||'null').substring(0,10) + ' appjs=' + !!appjsUrl);
             return null;
         }
 
@@ -213,10 +232,9 @@ async function fetchCreds() {
             return null;
         }
 
-        console.log('fetchCreds: epoch=' + epoch + ' buildId=' + buildId + ' mask=' + mask + ' partB=' + partB.substring(0,20));
+        console.log('fetchCreds: ok epoch=' + epoch + ' buildId=' + buildId);
         return { epoch: epoch, partB: partB, mask: mask, buildId: buildId };
     } catch(e) {
-        console.log('fetchCreds error: ' + e);
         return null;
     }
 }
@@ -337,7 +355,6 @@ async function buildAaReq(queryHash) {
         result.set(ctWithTag, 13);
         return bytesToBase64(result);
     } catch(e) {
-        console.log('buildAaReq error: ' + e);
         return null;
     }
 }
@@ -357,7 +374,6 @@ async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
         if (!res) return null;
         var text = typeof res.text === 'function' ? await res.text() : null;
         if (!text || text.trim().indexOf('<') === 0) return null;
-        if (includeAaReq) console.log('[AM] sources response: ' + text.substring(0, 150));
         return JSON.parse(text);
     } catch(e) { if (includeAaReq) console.log('[AM] allanimeGet error: ' + e); return null; }
 }
@@ -447,9 +463,7 @@ async function extractStreamUrl(slug) {
                 var decrypted = decodeTobeparsed(data.data.tobeparsed, null);
                 var parsed = JSON.parse(decrypted);
                 sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
-                console.log('[AM] decrypted sourceUrls count=' + sourceUrls.length);
-                if (sourceUrls.length > 0) console.log('[AM] sources: ' + sourceUrls.map(function(s){return s.sourceName+':'+((s.sourceUrl||'').substring(0,10));}).join(', '));
-            } catch(e) { console.log('[AM] decrypt error: ' + e); }
+            } catch(e) {}
         } else if (data.data.episode && data.data.episode.sourceUrls) {
             sourceUrls = data.data.episode.sourceUrls;
         }
