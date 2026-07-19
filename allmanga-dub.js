@@ -208,15 +208,21 @@ async function fetchCreds() {
         var appText = typeof appRes.text === 'function' ? await appRes.text() : null;
         if (!appText) return null;
 
-        var chunkMatch = appText.match(/from\s*["']\.\.(\/chunks\/[^"'\s]+?\.[a-z0-9]+)["']\s*;\s*import/i);
-        var chunkPath = chunkMatch ? chunkMatch[1] : null;
-        if (!chunkPath) {
+        // Extract the largest chunk import from app.js
+        var chunkMatches = appText.match(/["'](https:\/\/cdn\.mkissa\.net\/all\/mk\/_app\/immutable\/chunks\/[^"']+\.js)["']/g);
+        if (!chunkMatches) {
+            // Try relative path
+            var relMatches = appText.match(/\/chunks\/[a-zA-Z0-9_\-]+\.[a-z0-9]+\.js/g);
+            chunkMatches = relMatches;
+        }
+        if (!chunkMatches || chunkMatches.length === 0) {
             console.log('fetchCreds: missing chunk path');
             return null;
         }
-
-        // Step 4: Get mask and buildId from chunk JS
-        var chunkUrl = 'https://cdn.mkissa.net/all/mk/_app/immutable' + chunkPath;
+        // Use the last chunk (typically the largest/main one)
+        var chunkRaw = chunkMatches[chunkMatches.length - 1].replace(/["']/g, '');
+        console.log("fetchCreds: chunk=" + (chunkRaw||"null").substring(0,80));
+        var chunkUrl = chunkRaw.indexOf('http') === 0 ? chunkRaw : 'https://cdn.mkissa.net/all/mk/_app/immutable' + chunkRaw;
         var chunkRes = await soraFetch(chunkUrl, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
         if (!chunkRes) return null;
         var chunkText = typeof chunkRes.text === 'function' ? await chunkRes.text() : null;
