@@ -224,11 +224,11 @@ async function fetchCreds() {
             if (!cRes) continue;
             var cText = typeof cRes.text === 'function' ? await cRes.text() : null;
             if (!cText) continue;
-            var mMatch = cText.match(/[0-9a-f]{64}/i);
-            var bMatch = cText.match(/[0-9a-f]{64}[^"]*?"(\d+)"/i);
+            var mMatch = cText.match(/"([0-9a-f]{64})"/i);
+            var bMatch = cText.match(/"([0-9a-f]{64})"[^"]*?"(\d+)"/i);
             if (mMatch && bMatch) {
-                mask = mMatch[0];
-                buildId = bMatch[1];
+                mask = mMatch[1];
+                buildId = bMatch[2];
                 break;
             }
         }
