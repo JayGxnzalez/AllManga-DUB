@@ -194,7 +194,7 @@ async function fetchCreds() {
         if (!htmlRes) return null;
         var html = typeof htmlRes.text === 'function' ? await htmlRes.text() : null;
         if (!html) return null;
-        var appjsMatch = html.match(/https:\/\/cdn\.allanime\.day\/all\/mk\/_app\/immutable\/entry\/app\.[^"']+\.js/);
+        var appjsMatch = html.match(/https:\/\/cdn\.mkissa\.net\/all\/mk\/_app\/immutable\/entry\/app\.[^"']+\.js/);
         var appjsUrl = appjsMatch ? appjsMatch[0] : null;
 
         if (!epoch || !partB || !appjsUrl) {
@@ -216,7 +216,7 @@ async function fetchCreds() {
         }
 
         // Step 4: Get mask and buildId from chunk JS
-        var chunkUrl = 'https://cdn.allanime.day/all/mk/_app/immutable' + chunkPath;
+        var chunkUrl = 'https://cdn.mkissa.net/all/mk/_app/immutable' + chunkPath;
         var chunkRes = await soraFetch(chunkUrl, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
         if (!chunkRes) return null;
         var chunkText = typeof chunkRes.text === 'function' ? await chunkRes.text() : null;
