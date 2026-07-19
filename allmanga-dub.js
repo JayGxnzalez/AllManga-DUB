@@ -210,7 +210,7 @@ async function fetchCreds() {
         if (!appText) return null;
 
         // Extract chunk paths from __vite__mapDeps
-        var chunkMatches = appText.match(/\.\.\/chunks\/[a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+\.js/g);
+        var chunkMatches = appText.match(/["'][^"']*\/chunks\/[^"']*\.js["']/g);
         if (!chunkMatches || chunkMatches.length === 0) {
             console.log('fetchCreds: missing chunk path');
             return null;
@@ -218,7 +218,7 @@ async function fetchCreds() {
         // Iterate chunks to find the one containing mask (64-char hex) and buildId
         var mask = null, buildId = null;
         for (var ci = 0; ci < chunkMatches.length; ci++) {
-            var cPath = chunkMatches[ci].replace('../chunks/', '/all/mk/_app/immutable/chunks/');
+            var cPath = chunkMatches[ci].replace(/["']/g, '').replace('../chunks/', '/all/mk/_app/immutable/chunks/');
             var cUrl = 'https://cdn.mkissa.net' + cPath;
             var cRes = await soraFetch(cUrl, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
             if (!cRes) continue;
