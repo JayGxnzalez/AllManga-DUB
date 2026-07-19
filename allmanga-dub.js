@@ -194,7 +194,7 @@ async function fetchCreds() {
         if (!htmlRes) return null;
         var html = typeof htmlRes.text === 'function' ? await htmlRes.text() : null;
         if (!html) return null;
-        var appjsMatch = html.match(/https:\/\/cdn\.mkissa\.net\/all\/mk\/_app\/immutable\/entry\/[^"'\s]+\.js/);
+        var appjsMatch = html.match(/https:\/\/cdn\.mkissa\.net\/all\/mk\/_app\/immutable\/entry\/app\.[^"'\s]+\.js/);
         var appjsUrl = appjsMatch ? appjsMatch[0] : null;
 
         console.log('fetchCreds: epoch=' + epoch + ' partB=' + (partB||'null').substring(0,10) + ' appjs=' + (appjsUrl||'null').substring(0,60));
