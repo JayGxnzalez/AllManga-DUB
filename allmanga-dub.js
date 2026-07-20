@@ -396,7 +396,7 @@ async function resolveStreamUrl(source) {
 
 async function searchResults(keyword) {
     try {
-        var variables = { search: { query: keyword }, limit: 26, page: 1, translationType: 'dub', countryOrigin: 'ALL' };
+        var variables = { search: { query: keyword }, limit: 26, page: 1, translationType: 'dub' };
         var data = await allanimeGet(variables, SEARCH_HASH, HEADERS, false);
         if (!data || !data.data || !data.data.shows || !data.data.shows.edges) return JSON.stringify([]);
         var results = [], edges = data.data.shows.edges;
