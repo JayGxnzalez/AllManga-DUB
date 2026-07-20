@@ -1,14 +1,14 @@
 // AllManga (DUB) Module
 // Pure JS AES-256-GCM decryption + aaReq auth + clock.json resolution
 
-var ALLANIME_API = 'https://api.allanime.day/api';
+var ALLANIME_API = 'https://api.mkissa.net/api';
 var ALLANIME_REFR = 'https://mkissa.to';
 var ALLANIME_KEY = 'a254aa27c410f297bd04ba33a0c0df7ff4e706bf3ae27271c6703f84e750f552';
 var ALLANIME_W = null;
 var ALLANIME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0';
-var SEARCH_HASH = 'a24c500a1b765c68ae1d8dd85174931f661c71369c89b92b88b75a725afc471c';
-var EPISODES_HASH = '043448386c7a686bc2aabfbb6b80f6074e795d350df48015023b079527b0848a';
-var SOURCES_HASH = 'd405d0edd690624b66baba3068e0edc3ac90f1597d898a1ec8db4e5c43c00fec';
+var SEARCH_HASH = '0e1586b304023994deb887effcbc6cd1815488e6781a31442320f4c050abbe7b';
+var EPISODES_HASH = 'bc896210babaf9967479eb204c27b9cd8312f9d6b84cb7a8a8defe47bdd6da16';
+var SOURCES_HASH = 'f4662f4b7510b26795dd53ef824a0bf1740fbbc5d1273fab18222ac831bca8d0';
 
 var HEADERS = {
     'User-Agent': ALLANIME_UA,
