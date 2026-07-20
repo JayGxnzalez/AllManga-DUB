@@ -158,68 +158,48 @@ async function soraFetch(url, options) {
 // aaReq generation using crypto.subtle (available in WKWebView/JSCore on iOS)
 async function fetchCreds() {
     try {
-        // Step 1: Fetch partB and epoch from bootstrap endpoint
-        var bootstrapRes = await soraFetch('https://api.allanime.day/client-crypto/v1/bootstrap?buildId=13', {
-            method: 'GET',
-            headers: { 'User-Agent': ALLANIME_UA, 'x-build-id': '13', 'Origin': ALLANIME_REFR, 'Referer': ALLANIME_REFR + '/' }
-        });
-        var epoch = null, partB = null;
-        if (bootstrapRes) {
-            var bText = typeof bootstrapRes.text === 'function' ? await bootstrapRes.text() : null;
-            if (bText) {
-                try {
-                    var bJson = JSON.parse(bText);
-                    epoch = bJson.epoch !== undefined ? String(bJson.epoch) : null;
-                    partB = bJson.partB || null;
-                } catch(e) {}
-            }
-        }
-
-        // Fallback: scrape mkissa.to HTML
-        if (!epoch || !partB) {
-            var res = await soraFetch(ALLANIME_REFR, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
-            if (res) {
-                var html = typeof res.text === 'function' ? await res.text() : null;
-                if (html) {
-                    var epochMatch = html.match(/"epoch":(\d+)/);
-                    if (!epoch) epoch = epochMatch ? epochMatch[1] : null;
-                    var partBMatch = html.match(/"partB":"([^"]+)"/);
-                    if (!partB) partB = partBMatch ? partBMatch[1] : null;
-                }
-            }
-        }
-
-        // Step 2: Get app JS URL from mkissa.to HTML
-        var htmlRes = await soraFetch(ALLANIME_REFR, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
-        if (!htmlRes) return null;
-        var html = typeof htmlRes.text === 'function' ? await htmlRes.text() : null;
+        var res = await soraFetch(ALLANIME_REFR, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
+        if (!res) return null;
+        var html = typeof res.text === 'function' ? await res.text() : null;
         if (!html) return null;
-        var appjsMatch = html.match(/https:\/\/cdn\.mkissa\.net\/all\/mk\/_app\/immutable\/entry\/app\.[^"'\s]+\.js/);
-        var appjsUrl = appjsMatch ? appjsMatch[0] : null;
 
-        console.log('fetchCreds: epoch=' + epoch + ' partB=' + (partB||'null').substring(0,10) + ' appjs=' + (appjsUrl||'null').substring(0,60));
-        if (!epoch || !partB || !appjsUrl) {
-            console.log('fetchCreds: missing epoch/partB/appjs');
+        // Get epoch and partB from window.__aaCrypto
+        var aaCryptoMatch = html.match(/window\.__aaCrypto\s*=\s*(\{[^}]+\})/);
+        var epoch = null, partB = null;
+        if (aaCryptoMatch) {
+            var epochMatch = aaCryptoMatch[1].match(/"epoch"\s*:\s*(\d+)/);
+            epoch = epochMatch ? epochMatch[1] : null;
+            var partBMatch = aaCryptoMatch[1].match(/"partB"\s*:\s*"([^"]+)"/);
+            partB = partBMatch ? partBMatch[1] : null;
+        }
+        if (!epoch || !partB) {
+            var epochMatch2 = html.match(/"epoch":(\d+)/);
+            if (!epoch) epoch = epochMatch2 ? epochMatch2[1] : null;
+            var partBMatch2 = html.match(/"partB":"([^"]+)"/);
+            if (!partB) partB = partBMatch2 ? partBMatch2[1] : null;
+        }
+
+        if (!epoch || !partB) {
+            console.log('fetchCreds: missing epoch/partB');
             return null;
         }
 
-        // Step 3: Get chunk path from app.js
-        var appRes = await soraFetch(appjsUrl, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
-        if (!appRes) return null;
-        var appText = typeof appRes.text === 'function' ? await appRes.text() : null;
-        if (!appText) return null;
-
-        // Extract chunk paths from __vite__mapDeps
-        var chunkMatches = appText.match(/["'][^"']*\/chunks\/[^"']*\.js["']/g);
+        // Get all preloaded chunk URLs directly from HTML (much faster than parsing app.js)
+        var chunkMatches = html.match(/https:\/\/cdn\.mkissa\.net\/all\/mk\/_app\/immutable\/chunks\/[a-zA-Z0-9_\-]+\.js/g);
         if (!chunkMatches || chunkMatches.length === 0) {
-            console.log('fetchCreds: missing chunk path');
+            console.log('fetchCreds: no preloaded chunks found');
             return null;
         }
-        // Iterate chunks to find the one containing mask (64-char hex) and buildId
+        // Dedupe
+        var seen = {};
+        var uniqueChunks = [];
+        for (var ui = 0; ui < chunkMatches.length; ui++) {
+            if (!seen[chunkMatches[ui]]) { seen[chunkMatches[ui]] = true; uniqueChunks.push(chunkMatches[ui]); }
+        }
+
         var mask = null, buildId = null;
-        for (var ci = 0; ci < chunkMatches.length; ci++) {
-            var cPath = chunkMatches[ci].replace(/["']/g, '').replace('../chunks/', '/all/mk/_app/immutable/chunks/');
-            var cUrl = 'https://cdn.mkissa.net' + cPath;
+        for (var ci = 0; ci < uniqueChunks.length; ci++) {
+            var cUrl = uniqueChunks[ci];
             var cRes = await soraFetch(cUrl, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
             if (!cRes) continue;
             var cText = typeof cRes.text === 'function' ? await cRes.text() : null;
@@ -233,12 +213,13 @@ async function fetchCreds() {
             }
         }
         if (!mask || !buildId) {
-            console.log('fetchCreds: missing mask/buildId after ' + chunkMatches.length + ' chunks');
+            console.log('fetchCreds: missing mask/buildId after ' + uniqueChunks.length + ' chunks');
             return null;
         }
         console.log('fetchCreds: ok epoch=' + epoch + ' buildId=' + buildId);
         return { epoch: epoch, partB: partB, mask: mask, buildId: buildId };
     } catch(e) {
+        console.log('fetchCreds error: ' + e);
         return null;
     }
 }
