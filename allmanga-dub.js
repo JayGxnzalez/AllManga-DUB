@@ -179,27 +179,31 @@ async function fetchCreds() {
             if (!partB) partB = partBMatch2 ? partBMatch2[1] : null;
         }
 
-        if (!epoch || !partB) {
-            console.log('fetchCreds: missing epoch/partB');
+        // Get app JS URL from raw HTML (this is present pre-JS-execution)
+        var appjsMatch = html.match(/https:\/\/cdn\.mkissa\.net\/all\/mk\/_app\/immutable\/entry\/app\.[^"'\s]+\.js/);
+        var appjsUrl = appjsMatch ? appjsMatch[0] : null;
+
+        if (!epoch || !partB || !appjsUrl) {
+            console.log('fetchCreds: missing epoch/partB/appjs epoch=' + epoch + ' partB=' + (partB||'null').substring(0,10) + ' appjs=' + !!appjsUrl);
             return null;
         }
 
-        // Get all preloaded chunk URLs directly from HTML (much faster than parsing app.js)
-        var chunkMatches = html.match(/https:\/\/cdn\.mkissa\.net\/all\/mk\/_app\/immutable\/chunks\/[a-zA-Z0-9_\-]+\.js/g);
+        var appRes = await soraFetch(appjsUrl, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
+        if (!appRes) return null;
+        var appText = typeof appRes.text === 'function' ? await appRes.text() : null;
+        if (!appText) return null;
+
+        // Extract chunk paths from __vite__mapDeps
+        var chunkMatches = appText.match(/["'][^"']*\/chunks\/[^"']*\.js["']/g);
         if (!chunkMatches || chunkMatches.length === 0) {
-            console.log('fetchCreds: no preloaded chunks found');
+            console.log('fetchCreds: missing chunk path');
             return null;
-        }
-        // Dedupe
-        var seen = {};
-        var uniqueChunks = [];
-        for (var ui = 0; ui < chunkMatches.length; ui++) {
-            if (!seen[chunkMatches[ui]]) { seen[chunkMatches[ui]] = true; uniqueChunks.push(chunkMatches[ui]); }
         }
 
         var mask = null, buildId = null;
-        for (var ci = 0; ci < uniqueChunks.length; ci++) {
-            var cUrl = uniqueChunks[ci];
+        for (var ci = 0; ci < chunkMatches.length; ci++) {
+            var cPath = chunkMatches[ci].replace(/["']/g, '').replace('../chunks/', '/all/mk/_app/immutable/chunks/');
+            var cUrl = cPath.indexOf('http') === 0 ? cPath : 'https://cdn.mkissa.net' + cPath;
             var cRes = await soraFetch(cUrl, { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
             if (!cRes) continue;
             var cText = typeof cRes.text === 'function' ? await cRes.text() : null;
@@ -213,7 +217,7 @@ async function fetchCreds() {
             }
         }
         if (!mask || !buildId) {
-            console.log('fetchCreds: missing mask/buildId after ' + uniqueChunks.length + ' chunks');
+            console.log('fetchCreds: missing mask/buildId after ' + chunkMatches.length + ' chunks');
             return null;
         }
         console.log('fetchCreds: ok epoch=' + epoch + ' buildId=' + buildId);
