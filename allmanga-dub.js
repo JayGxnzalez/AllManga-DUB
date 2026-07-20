@@ -245,7 +245,7 @@ async function fetchCreds() {
 
 async function getCreds() {
     var now = Date.now();
-    if (aaCreds && (now - aaCredsTime < 300000)) return aaCreds;
+    if (aaCreds && (now - aaCredsTime < 20000)) return aaCreds;
     if (!aaCredsPromise) {
         aaCredsPromise = fetchCreds().then(function(c) {
             if (c) { aaCreds = c; aaCredsTime = Date.now(); }
