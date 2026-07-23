@@ -353,24 +353,35 @@ function aesGcmEncryptPure(key, iv, plaintext) {
     return out;
 }
 
-async function buildAaReq(queryHash) {
+// Builds an aaReq token.
+// variant 0 = current site shape  -> IV: epoch:buildId:qh:ts   payload includes buildId
+// variant 1 = ani-cli shape       -> IV: epoch:qh:ts           payload omits buildId
+// The server appears to accept more than one payload version, so we try both.
+async function buildAaReq(queryHash, variant) {
     try {
         var creds = await getCreds();
         if (!creds) return null;
         var rawKey = deriveAaKey(creds);
         if (!rawKey) return null;
+
         var interval = 5 * 60 * 1000;
         var ts = Math.floor(Date.now() / interval) * interval;
         var epoch = creds.epoch;
         var buildId = creds.buildId;
-        // IV = SHA-256("epoch:buildId:queryHash:ts")[:12]
-        var iv = puresha256(epoch + ':' + buildId + ':' + queryHash + ':' + ts).slice(0, 12);
-        // Payload
-        var payload = JSON.stringify({ v: 1, ts: ts, epoch: parseInt(epoch), buildId: String(buildId), qh: queryHash });
-        var plaintext = stringToUtf8Bytes(payload);
-        // Encrypt with pure JS AES-GCM
-        var ctWithTag = aesGcmEncryptPure(rawKey, iv, plaintext);
-        // Assemble: [1][iv(12)][ciphertext+tag]
+
+        var ivInput, payload;
+        if (variant === 1) {
+            ivInput = epoch + ':' + queryHash + ':' + ts;
+            payload = JSON.stringify({ v: 1, ts: ts, epoch: parseInt(epoch), qh: queryHash });
+        } else {
+            ivInput = epoch + ':' + buildId + ':' + queryHash + ':' + ts;
+            payload = JSON.stringify({ v: 1, ts: ts, epoch: parseInt(epoch), buildId: String(buildId), qh: queryHash });
+        }
+
+        var iv = puresha256(ivInput).slice(0, 12);
+        var ctWithTag = aesGcmEncryptPure(rawKey, iv, stringToUtf8Bytes(payload));
+
+        // Envelope: [1][iv(12)][ciphertext+tag]
         var result = new Uint8Array(1 + 12 + ctWithTag.length);
         result[0] = 1;
         result.set(iv, 1);
@@ -381,23 +392,60 @@ async function buildAaReq(queryHash) {
     }
 }
 
-async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
-    var encoded = encodeURIComponent(JSON.stringify(variables));
+function isCryptoReject(text) {
+    if (!text) return false;
+    return text.indexOf('AA_CRYPTO_STALE') !== -1
+        || text.indexOf('AA_CRYPTO_MISSING') !== -1
+        || text.indexOf('AA_CRYPTO_EXPIRED') !== -1
+        || text.indexOf('AA_CRYPTO_BUILD_MISMATCH') !== -1;
+}
+
+function buildApiUrl(variables, hash, aaReq) {
     var extObj = { persistedQuery: { version: 1, sha256Hash: hash } };
-    if (includeAaReq) {
-        var aaReq = await buildAaReq(hash);
-        if (aaReq) extObj.aaReq = aaReq;
-    }
-    var ext = encodeURIComponent(JSON.stringify(extObj));
-    var url = ALLANIME_API + '?variables=' + encoded + '&extensions=' + ext;
-    var headers = customHeaders || HEADERS;
+    if (aaReq) extObj.aaReq = aaReq;
+    return ALLANIME_API + '?variables=' + encodeURIComponent(JSON.stringify(variables))
+         + '&extensions=' + encodeURIComponent(JSON.stringify(extObj));
+}
+
+async function apiCall(url, headers) {
     try {
         var res = await soraFetch(url, { headers: headers, method: 'GET', body: null });
         if (!res) return null;
         var text = typeof res.text === 'function' ? await res.text() : null;
         if (!text || text.trim().indexOf('<') === 0) return null;
-        return JSON.parse(text);
-    } catch(e) { if (includeAaReq) console.log('[AM] allanimeGet error: ' + e); return null; }
+        return text;
+    } catch(e) { return null; }
+}
+
+async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
+    var headers = customHeaders || HEADERS;
+
+    // Requests that don't need auth
+    if (!includeAaReq) {
+        var plain = await apiCall(buildApiUrl(variables, hash, null), headers);
+        if (!plain) return null;
+        try { return JSON.parse(plain); } catch(e) { return null; }
+    }
+
+    // Auth'd requests: try each payload variant until one is accepted
+    for (var variant = 0; variant <= 1; variant++) {
+        var aaReq = await buildAaReq(hash, variant);
+        if (!aaReq) continue;
+
+        var text = await apiCall(buildApiUrl(variables, hash, aaReq), headers);
+        if (!text) continue;
+
+        if (isCryptoReject(text)) {
+            console.log('[AM] variant ' + variant + ' rejected');
+            continue;
+        }
+
+        if (variant > 0) console.log('[AM] variant ' + variant + ' accepted');
+        try { return JSON.parse(text); } catch(e) { return null; }
+    }
+
+    console.log('[AM] all aaReq variants rejected');
+    return null;
 }
 
 async function resolveStreamUrl(source) {
