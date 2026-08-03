@@ -6,6 +6,8 @@ var ALLANIME_REFR = 'https://mkissa.to';
 var ALLANIME_KEY = 'a254aa27c410f297bd04ba33a0c0df7ff4e706bf3ae27271c6703f84e750f552';
 var ALLANIME_W = null;
 var ALLANIME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0';
+var API_HOSTS = ['https://api.mkissa.net/api', 'https://api.allanime.day/api'];
+
 var SEARCH_HASH = '4717b9be6c8e5858850c4b5458c9b53076ebf27c0520279be29d5aed9f3679c7';
 var EPISODES_HASH = 'bc896210babaf9967479eb204c27b9cd8312f9d6b84cb7a8a8defe47bdd6da16';
 var SOURCES_HASH = 'f4662f4b7510b26795dd53ef824a0bf1740fbbc5d1273fab18222ac831bca8d0';
@@ -519,43 +521,118 @@ async function extractEpisodes(showId) {
     } catch(e) { return JSON.stringify([]); }
 }
 
+var CDN_BASE = 'https://allanimenews.com';
+
+function cdnUrl(path) {
+    if (!path) return '';
+    var p = String(path).trim();
+    if (/^https?:\/\//i.test(p)) return p;
+    return CDN_BASE + '/' + p.replace(/^\/+/, '');
+}
+
+// Raw GraphQL POST - no persisted-query hash, no aaReq. Tries each API host.
+async function gqlRaw(query) {
+    for (var i = 0; i < API_HOSTS.length; i++) {
+        try {
+            var res = await soraFetch(API_HOSTS[i], {
+                method: 'POST',
+                headers: {
+                    'Origin': ALLANIME_REFR,
+                    'Referer': ALLANIME_REFR + '/',
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json, text/plain, */*',
+                    'User-Agent': ALLANIME_UA
+                },
+                body: JSON.stringify({ query: query })
+            });
+            if (!res) continue;
+            var text = typeof res.text === 'function' ? await res.text() : null;
+            if (!text) continue;
+            var json = JSON.parse(text);
+            if (json && json.data) return json.data;
+        } catch(e) {}
+    }
+    return null;
+}
+
+// Bypasses aaReq entirely: episodeInfos returns direct CDN paths with no
+// encrypted sourceUrls/tobeparsed. Used only when the aaReq route yields nothing.
+async function aaLegacyStreams(showId, epNumber) {
+    try {
+        var q = '{episodeInfos(showId:' + JSON.stringify(String(showId))
+              + ',episodeNumStart:' + epNumber
+              + ',episodeNumEnd:' + epNumber
+              + '){episodeIdNum vidInforsdub}}';
+        var data = await gqlRaw(q);
+        var eps = (data && data.episodeInfos) || [];
+        if (!eps.length) return [];
+
+        var ep = null;
+        for (var i = 0; i < eps.length; i++) {
+            if (String(eps[i].episodeIdNum) === String(epNumber)) { ep = eps[i]; break; }
+        }
+        if (!ep) ep = eps[0];
+
+        var streams = [];
+        var info = ep && ep.vidInforsdub;
+        if (info && info.vidPath) {
+            streams.push({
+                title: 'DUB' + (info.vidResolution ? ' ' + info.vidResolution + 'p' : ''),
+                streamUrl: cdnUrl(info.vidPath),
+                headers: { Referer: CDN_BASE + '/', Origin: CDN_BASE }
+            });
+        }
+        console.log('[AM] legacy fallback -> ' + streams.length + ' stream(s)');
+        return streams;
+    } catch(e) {
+        console.log('[AM] legacy fallback error: ' + e);
+        return [];
+    }
+}
+
 async function extractStreamUrl(slug) {
     try {
         var parts = slug.split('|');
         var showId = parts[0], epNumber = parts[1];
         var variables = { showId: showId, translationType: 'dub', episodeString: String(epNumber) };
         var data = await allanimeGet(variables, SOURCES_HASH, SOURCES_HEADERS, true);
-        if (!data || !data.data) return JSON.stringify({ streams: [], subtitles: [] });
 
         var sourceUrls = [];
-        if (data.data._m && data.data.tobeparsed) {
-            try {
-                var decrypted = decodeTobeparsed(data.data.tobeparsed, null);
-                var parsed = JSON.parse(decrypted);
-                sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
-            } catch(e) {}
-        } else if (data.data.episode && data.data.episode.sourceUrls) {
-            sourceUrls = data.data.episode.sourceUrls;
+        if (data && data.data) {
+            if (data.data._m && data.data.tobeparsed) {
+                try {
+                    var decrypted = decodeTobeparsed(data.data.tobeparsed, null);
+                    var parsed = JSON.parse(decrypted);
+                    sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
+                } catch(e) {}
+            } else if (data.data.episode && data.data.episode.sourceUrls) {
+                sourceUrls = data.data.episode.sourceUrls;
+            }
         }
-
-        if (!sourceUrls.length) return JSON.stringify({ streams: [], subtitles: [] });
-
-        var validSources = [], seenUrls = {};
-        for (var i = 0; i < sourceUrls.length; i++) {
-            var src = sourceUrls[i];
-            if (!src.sourceUrl) continue;
-            if (src.sourceUrl.indexOf('--') !== 0) continue;
-            if (seenUrls[src.sourceUrl]) continue;
-            seenUrls[src.sourceUrl] = true;
-            validSources.push(src);
-        }
-
-        var promises = [];
-        for (var i = 0; i < validSources.length; i++) promises.push(resolveStreamUrl(validSources[i]));
-        var results = await Promise.all(promises);
 
         var streams = [];
-        for (var i = 0; i < results.length; i++) { if (results[i]) streams.push(results[i]); }
+        if (sourceUrls.length) {
+            var validSources = [], seenUrls = {};
+            for (var i = 0; i < sourceUrls.length; i++) {
+                var src = sourceUrls[i];
+                if (!src.sourceUrl) continue;
+                if (src.sourceUrl.indexOf('--') !== 0) continue;
+                if (seenUrls[src.sourceUrl]) continue;
+                seenUrls[src.sourceUrl] = true;
+                validSources.push(src);
+            }
+            var promises = [];
+            for (var j = 0; j < validSources.length; j++) promises.push(resolveStreamUrl(validSources[j]));
+            var results = await Promise.all(promises);
+            for (var k = 0; k < results.length; k++) { if (results[k]) streams.push(results[k]); }
+        }
+
+        // aaReq route yielded nothing (rejected, no sourceUrls, or all resolves
+        // failed) -> fall back to the unauthenticated episodeInfos query.
+        if (!streams.length) {
+            streams = await aaLegacyStreams(showId, epNumber);
+        }
+
         return JSON.stringify({ streams: streams, subtitles: [] });
     } catch(e) { return JSON.stringify({ streams: [], subtitles: [] }); }
 }
