@@ -460,6 +460,10 @@ async function fetchEmbed(url) {
 async function resolveOkRu(embedUrl, name) {
     var html = await fetchEmbed(embedUrl);
     if (!html) return null;
+    console.log('[AM] Ok page len=' + html.length
+        + ' hasDataOptions=' + (html.indexOf('data-options') !== -1)
+        + ' hasMetadata=' + (html.indexOf('metadata') !== -1)
+        + ' hasHls=' + (html.indexOf('ondemandHls') !== -1));
     var m = html.match(/data-options="([\s\S]*?)"/);
     if (!m) return null;
     try {
@@ -493,6 +497,10 @@ async function resolveMp4Upload(embedUrl, name) {
 async function resolveGenericIframe(embedUrl, name) {
     var html = await fetchEmbed(embedUrl);
     if (!html) return null;
+    console.log('[AM] ' + name + ' page len=' + html.length
+        + ' m3u8=' + (html.indexOf('m3u8') !== -1)
+        + ' mp4=' + (html.indexOf('.mp4') !== -1)
+        + ' packed=' + (html.indexOf('p,a,c,k,e,d') !== -1));
 
     var m = html.match(/["']?file["']?\s*[:=]\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i)
          || html.match(/sources\s*:\s*\[\s*\{[^}]*file\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i)
