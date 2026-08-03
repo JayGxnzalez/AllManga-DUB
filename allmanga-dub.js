@@ -571,6 +571,14 @@ async function extractStreamUrl(slug) {
             }
         }
 
+        if (sourceUrls.length) {
+            console.log('[AM] sources: ' + sourceUrls.map(function(x){
+                return (x.sourceName||'?') + ':' + String(x.sourceUrl||'').substring(0,12);
+            }).join(', '));
+        } else {
+            console.log('[AM] no sourceUrls returned');
+        }
+
         var streams = [];
         if (sourceUrls.length) {
             var validSources = [], seenUrls = {};
