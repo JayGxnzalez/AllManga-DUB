@@ -460,24 +460,30 @@ async function fetchEmbed(url) {
 async function resolveOkRu(embedUrl, name) {
     var html = await fetchEmbed(embedUrl);
     if (!html) return null;
-    console.log('[AM] Ok page len=' + html.length
-        + ' hasDataOptions=' + (html.indexOf('data-options') !== -1)
-        + ' hasMetadata=' + (html.indexOf('metadata') !== -1)
-        + ' hasHls=' + (html.indexOf('ondemandHls') !== -1));
-    var m = html.match(/data-options="([\s\S]*?)"/);
+
+    // The page embeds JSON inside an HTML attribute, so quotes arrive as
+    // &quot; and the payload is nested/re-escaped. Pulling the URL directly
+    // is far more robust than unescaping and JSON.parsing the whole blob.
+    var unescaped = html.replace(/&quot;/g, '"').replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+
+    var m = unescaped.match(/"ondemandHls"\s*:\s*"([^"]+)"/)
+         || unescaped.match(/"hlsManifestUrl"\s*:\s*"([^"]+)"/)
+         || unescaped.match(/(https?:\/\/[^\s"']+\.m3u8[^\s"']*)/i);
+
+    if (!m) {
+        // fall back to a progressive MP4 from the videos[] array
+        m = unescaped.match(/"url"\s*:\s*"(https?:\/\/[^"]+\.mp4[^"]*)"/i);
+    }
+
     if (!m) return null;
-    try {
-        var opts = JSON.parse(m[1].replace(/&quot;/g, '"'));
-        var fv = opts && opts.flashvars;
-        if (!fv || !fv.metadata) return null;
-        var meta = JSON.parse(fv.metadata);
-        var movie = meta && meta.movie;
-        if (!movie) return null;
-        var url = movie.ondemandHls || '';
-        if (!url && movie.videos && movie.videos.length) url = movie.videos[0].url || '';
-        if (!url || url.indexOf('http') !== 0) return null;
-        return [{ title: name || 'Ok', streamUrl: url, headers: { 'Referer': embedUrl, 'User-Agent': ALLANIME_UA } }];
-    } catch(e) { return null; }
+    var url = m[1].replace(/\\/g, '');
+    if (url.indexOf('http') !== 0) return null;
+
+    return [{
+        title: name || 'Ok',
+        streamUrl: url,
+        headers: { 'Referer': embedUrl, 'User-Agent': ALLANIME_UA }
+    }];
 }
 
 async function resolveMp4Upload(embedUrl, name) {
@@ -497,10 +503,6 @@ async function resolveMp4Upload(embedUrl, name) {
 async function resolveGenericIframe(embedUrl, name) {
     var html = await fetchEmbed(embedUrl);
     if (!html) return null;
-    console.log('[AM] ' + name + ' page len=' + html.length
-        + ' m3u8=' + (html.indexOf('m3u8') !== -1)
-        + ' mp4=' + (html.indexOf('.mp4') !== -1)
-        + ' packed=' + (html.indexOf('p,a,c,k,e,d') !== -1));
 
     var m = html.match(/["']?file["']?\s*[:=]\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i)
          || html.match(/sources\s*:\s*\[\s*\{[^}]*file\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i)
