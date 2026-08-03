@@ -575,6 +575,7 @@ async function aaLegacyStreams(showId, epNumber) {
 
         var streams = [];
         var info = ep && ep.vidInforsdub;
+        console.log('[AM] vidInforsdub raw: ' + JSON.stringify(info).substring(0, 300));
         if (info && info.vidPath) {
             streams.push({
                 title: 'DUB' + (info.vidResolution ? ' ' + info.vidResolution + 'p' : ''),
