@@ -452,9 +452,9 @@ async function fetchEmbed(url) {
         });
         var timeoutPromise = new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 4000); });
         var res = await Promise.race([fetchPromise, timeoutPromise]);
-        if (!res) return null;
+        if (!res) { console.log('[AM] embed fetch failed/timeout: ' + String(url).substring(0, 40)); return null; }
         return typeof res.text === 'function' ? await res.text() : null;
-    } catch(e) { return null; }
+    } catch(e) { console.log('[AM] embed fetch error: ' + e); return null; }
 }
 
 async function resolveOkRu(embedUrl, name) {
@@ -514,16 +514,25 @@ async function resolveGenericIframe(embedUrl, name) {
 }
 
 async function resolveIframeSource(source) {
+    var name = (source && source.sourceName) || 'Server';
     try {
         var url = source.sourceUrl;
-        var name = source.sourceName || 'Server';
+        var out;
         if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(url)) {
-            return [{ title: name, streamUrl: url, headers: { 'Referer': ALLANIME_REFR + '/', 'User-Agent': ALLANIME_UA } }];
+            out = [{ title: name, streamUrl: url, headers: { 'Referer': ALLANIME_REFR + '/', 'User-Agent': ALLANIME_UA } }];
+        } else if (/mp4upload\.com/i.test(url)) {
+            out = await resolveMp4Upload(url, name);
+        } else if (/ok\.ru\/videoembed\//i.test(url)) {
+            out = await resolveOkRu(url, name);
+        } else {
+            out = await resolveGenericIframe(url, name);
         }
-        if (/mp4upload\.com/i.test(url)) return await resolveMp4Upload(url, name);
-        if (/ok\.ru\/videoembed\//i.test(url)) return await resolveOkRu(url, name);
-        return await resolveGenericIframe(url, name);
-    } catch(e) { return null; }
+        if (!out || !out.length) console.log('[AM] iframe ' + name + ': no media found');
+        return out;
+    } catch(e) {
+        console.log('[AM] iframe ' + name + ' error: ' + e);
+        return null;
+    }
 }
 
 async function resolveStreamUrl(source) {
