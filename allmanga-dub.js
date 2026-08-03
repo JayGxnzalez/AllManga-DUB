@@ -410,18 +410,28 @@ async function resolveStreamUrl(source) {
             var links = (json && json.links) || [];
             if (!links.length) return null;
 
-            var out = [];
+            // Only label when a source yields multiple links - otherwise the
+            // resolutionStr ("Hls") is noise on an already-unique name.
+            var usable = [];
             for (var li = 0; li < links.length; li++) {
-                var l = links[li];
-                if (!l || !l.link) continue;
-                var res_label = l.resolutionStr || (l.hls ? 'HLS' : '');
+                if (links[li] && links[li].link) usable.push(links[li]);
+            }
+            if (!usable.length) return null;
+
+            var out = [];
+            for (var lj = 0; lj < usable.length; lj++) {
+                var l = usable[lj];
+                var label = '';
+                if (usable.length > 1) {
+                    label = l.resolutionStr || (l.hls ? 'HLS' : '');
+                }
                 out.push({
-                    title: (source.sourceName || 'Server') + (res_label ? ' ' + res_label : ''),
+                    title: (source.sourceName || 'Server') + (label ? ' ' + label : ''),
                     streamUrl: l.link,
                     headers: { 'Referer': (l.headers && l.headers.Referer) || (ALLANIME_REFR + '/') }
                 });
             }
-            return out.length ? out : null;
+            return out;
         }
         return [{ title: source.sourceName || 'Server', streamUrl: decoded, headers: { 'Referer': ALLANIME_REFR + '/' } }];
     } catch(e) { return null; }
