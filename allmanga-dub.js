@@ -399,18 +399,31 @@ async function resolveStreamUrl(source) {
                 method: 'GET',
                 headers: { 'User-Agent': ALLANIME_UA, 'Referer': ALLANIME_REFR + '/', 'Origin': ALLANIME_REFR }
             });
-            var timeoutPromise = new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 8000); });
+            // 4s cap: healthy clock endpoints answer well under 1s, dead ones
+            // hang ~30s. Since we wait on all sources, the slowest sets the pace.
+            var timeoutPromise = new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 4000); });
             var res = await Promise.race([fetchPromise, timeoutPromise]);
             if (!res) return null;
             var text = typeof res.text === 'function' ? await res.text() : null;
             if (!text) return null;
             var json = JSON.parse(text);
-            if (json && json.links && json.links.length > 0) {
-                return { title: source.sourceName || 'Server', streamUrl: json.links[0].link, headers: { 'Referer': ALLANIME_REFR + '/' } };
+            var links = (json && json.links) || [];
+            if (!links.length) return null;
+
+            var out = [];
+            for (var li = 0; li < links.length; li++) {
+                var l = links[li];
+                if (!l || !l.link) continue;
+                var res_label = l.resolutionStr || (l.hls ? 'HLS' : '');
+                out.push({
+                    title: (source.sourceName || 'Server') + (res_label ? ' ' + res_label : ''),
+                    streamUrl: l.link,
+                    headers: { 'Referer': (l.headers && l.headers.Referer) || (ALLANIME_REFR + '/') }
+                });
             }
-            return null;
+            return out.length ? out : null;
         }
-        return { title: source.sourceName || 'Server', streamUrl: decoded, headers: { 'Referer': ALLANIME_REFR + '/' } };
+        return [{ title: source.sourceName || 'Server', streamUrl: decoded, headers: { 'Referer': ALLANIME_REFR + '/' } }];
     } catch(e) { return null; }
 }
 
@@ -562,7 +575,10 @@ async function extractStreamUrl(slug) {
             var promises = [];
             for (var j = 0; j < validSources.length; j++) promises.push(resolveStreamUrl(validSources[j]));
             var results = await Promise.all(promises);
-            for (var k = 0; k < results.length; k++) { if (results[k]) streams.push(results[k]); }
+            for (var k = 0; k < results.length; k++) {
+                if (!results[k]) continue;
+                for (var m = 0; m < results[k].length; m++) streams.push(results[k][m]);
+            }
         }
 
         // aaReq route yielded nothing (rejected, no sourceUrls, or all resolves
