@@ -537,7 +537,11 @@ async function resolveIframeSource(source) {
         } else {
             out = await resolveGenericIframe(url, name);
         }
-        if (!out || !out.length) console.log('[AM] iframe ' + name + ': no media found');
+        // Uni and Fm-Hls serve redirect stubs (~1.5KB, no media URL present),
+        // so their failure is expected and not worth logging every episode.
+        if ((!out || !out.length) && !/^(Uni|Fm-Hls)$/i.test(name)) {
+            console.log('[AM] iframe ' + name + ': no media found');
+        }
         return out;
     } catch(e) {
         console.log('[AM] iframe ' + name + ' error: ' + e);
