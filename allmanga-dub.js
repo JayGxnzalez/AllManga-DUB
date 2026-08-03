@@ -56,10 +56,6 @@ var SBOX = [
 ];
 
 // aaReq credential cache
-var aaBuild = null;          // { mask, buildId } - deploy-scoped, cached long
-var aaBuildTime = 0;
-var aaBuildPromise = null;
-var aaCredsPromise = null;
 
 function hexToBytes(hex) {
     var bytes = new Uint8Array(hex.length / 2);
@@ -162,129 +158,6 @@ async function soraFetch(url, options) {
 // mask/buildId change only on site deploys -> cache for a long window.
 // epoch/partB rotate independently -> always fetch fresh right before use.
 
-function parseAaCrypto(html) {
-    var epoch = null, partB = null;
-    var m = html.match(/window\.__aaCrypto\s*=\s*(\{[^}]+\})/);
-    if (m) {
-        var e1 = m[1].match(/"epoch"\s*:\s*(\d+)/);
-        epoch = e1 ? e1[1] : null;
-        var p1 = m[1].match(/"partB"\s*:\s*"([^"]+)"/);
-        partB = p1 ? p1[1] : null;
-    }
-    if (!epoch) { var e2 = html.match(/"epoch":(\d+)/); epoch = e2 ? e2[1] : null; }
-    if (!partB) { var p2 = html.match(/"partB":"([^"]+)"/); partB = p2 ? p2[1] : null; }
-    return { epoch: epoch, partB: partB };
-}
-
-function extractMaskBuild(text) {
-    var mMatch = text.match(/"([0-9a-f]{64})"/i);
-    var bMatch = text.match(/[0-9a-f]{64}"[\s\S]{0,80}?"(\d{1,3})"/i);
-    if (mMatch && bMatch) return { mask: mMatch[1], buildId: bMatch[1] };
-    return null;
-}
-
-// Fetches mask + buildId by walking app.js chunk list. Largest chunks first,
-// since the crypto chunk is consistently the biggest one.
-async function fetchBuild(html) {
-    try {
-        var appjsMatch = html.match(/https:\/\/cdn\.mkissa\.net\/all\/mk\/_app\/immutable\/entry\/app\.[^"'\s]+\.js/);
-        if (!appjsMatch) { console.log('fetchBuild: no app.js'); return null; }
-
-        var appRes = await soraFetch(appjsMatch[0], { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
-        if (!appRes) return null;
-        var appText = typeof appRes.text === 'function' ? await appRes.text() : null;
-        if (!appText) return null;
-
-        var raw = appText.match(/["'][^"']*\/chunks\/[^"']*\.js["']/g);
-        if (!raw || !raw.length) { console.log('fetchBuild: no chunks'); return null; }
-
-        var urls = [], seen = {};
-        for (var i = 0; i < raw.length; i++) {
-            var p = raw[i].replace(/["']/g, '').replace('../chunks/', '/all/mk/_app/immutable/chunks/');
-            var u = p.indexOf('http') === 0 ? p : 'https://cdn.mkissa.net' + p;
-            if (!seen[u]) { seen[u] = true; urls.push(u); }
-        }
-
-        for (var j = 0; j < urls.length; j++) {
-            var cRes = await soraFetch(urls[j], { method: 'GET', headers: { 'User-Agent': ALLANIME_UA } });
-            if (!cRes) continue;
-            var cText = typeof cRes.text === 'function' ? await cRes.text() : null;
-            if (!cText) continue;
-            var found = extractMaskBuild(cText);
-            if (found) {
-                console.log('fetchBuild: ok buildId=' + found.buildId + ' (chunk ' + (j + 1) + '/' + urls.length + ')');
-                return found;
-            }
-        }
-        console.log('fetchBuild: no mask/buildId in ' + urls.length + ' chunks');
-        return null;
-    } catch(e) {
-        console.log('fetchBuild error: ' + e);
-        return null;
-    }
-}
-
-async function getBuild(html) {
-    var now = Date.now();
-    if (aaBuild && (now - aaBuildTime < 21600000)) return aaBuild;   // 6h
-    if (!aaBuildPromise) {
-        aaBuildPromise = fetchBuild(html).then(function(b) {
-            if (b) { aaBuild = b; aaBuildTime = Date.now(); }
-            aaBuildPromise = null;
-            return b;
-        });
-    }
-    return aaBuildPromise;
-}
-
-async function fetchCreds() {
-    try {
-        var res = await soraFetch(ALLANIME_REFR, {
-            method: 'GET',
-            headers: { 'User-Agent': ALLANIME_UA, 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
-        });
-        if (!res) return null;
-        var html = typeof res.text === 'function' ? await res.text() : null;
-        if (!html) return null;
-
-        var live = parseAaCrypto(html);
-        if (!live.epoch || !live.partB) {
-            console.log('fetchCreds: missing epoch/partB');
-            return null;
-        }
-
-        var build = await getBuild(html);
-        if (!build) return null;
-
-        console.log('fetchCreds: ok epoch=' + live.epoch + ' buildId=' + build.buildId);
-        return { epoch: live.epoch, partB: live.partB, mask: build.mask, buildId: build.buildId };
-    } catch(e) {
-        console.log('fetchCreds error: ' + e);
-        return null;
-    }
-}
-
-// No caching here - epoch/partB must be current at token-build time.
-// Concurrent callers share one in-flight fetch.
-async function getCreds() {
-    if (!aaCredsPromise) {
-        aaCredsPromise = fetchCreds().then(function(c) {
-            aaCredsPromise = null;
-            return c;
-        });
-    }
-    return aaCredsPromise;
-}
-
-function deriveAaKey(creds) {
-    try {
-        var maskBytes = hexToBytes(creds.mask);
-        var partBBytes = base64ToBytes(creds.partB);
-        var key = new Uint8Array(32);
-        for (var i = 0; i < 32; i++) key[i] = partBBytes[i] ^ maskBytes[i % maskBytes.length];
-        return key;
-    } catch(e) { return null; }
-}
 
 function puresha256(strInput) {
     var bytes = stringToUtf8Bytes(strInput);
@@ -359,28 +232,71 @@ function aesGcmEncryptPure(key, iv, plaintext) {
 // variant 0 = current site shape  -> IV: epoch:buildId:qh:ts   payload includes buildId
 // variant 1 = ani-cli shape       -> IV: epoch:qh:ts           payload omits buildId
 // The server appears to accept more than one payload version, so we try both.
-async function buildAaReq(queryHash, variant) {
+var KEYGEN_URLS = [
+    'https://raw.githubusercontent.com/sdaqo/anipy-cli/refs/heads/key-gen/scripts/keygen/keygen.json',
+    'https://raw.githubusercontent.com/sdaqo/anipy-cli/key-gen/scripts/keygen/keygen.json'
+];
+
+// Last-resort constants if the keygen endpoint is unreachable.
+var FALLBACK_KEYGEN = {
+    build_id: '81',
+    epoch: '6889',
+    lane: 'k7',
+    key: 'f7bd37902f0d7fc067d82c7a4f9c52dff5f1539561773d38e20012d2b91f442e'
+};
+
+var keygenCache = { keys: null, ts: 0 };
+
+// The AES key is published ready-made rather than derived locally - the
+// server's key is no longer a plain mask XOR partB, so deriving it ourselves
+// produces a well-formed token the server rejects.
+async function fetchKeygen() {
+    var now = Date.now();
+    if (keygenCache.keys && (now - keygenCache.ts < 90000)) return keygenCache.keys;
+
+    for (var i = 0; i < KEYGEN_URLS.length; i++) {
+        try {
+            var res = await soraFetch(KEYGEN_URLS[i], {
+                method: 'GET',
+                headers: { 'User-Agent': ALLANIME_UA, 'Accept': 'application/json' }
+            });
+            if (!res) continue;
+            var text = typeof res.text === 'function' ? await res.text() : null;
+            if (!text) continue;
+            var j = JSON.parse(text);
+            if (j && j.key && j.build_id && j.lane && j.epoch !== undefined) {
+                var keys = {
+                    build_id: String(j.build_id),
+                    epoch: String(j.epoch),
+                    lane: String(j.lane),
+                    key: String(j.key)
+                };
+                keygenCache.keys = keys;
+                keygenCache.ts = Date.now();
+                console.log('[AM] keygen ok epoch=' + keys.epoch + ' buildId=' + keys.build_id + ' lane=' + keys.lane);
+                return keys;
+            }
+        } catch(e) {}
+    }
+    console.log('[AM] keygen unreachable, using fallback constants');
+    return FALLBACK_KEYGEN;
+}
+
+// Token shape: payload carries buildId AND lane; IV omits buildId.
+async function buildAaReq(queryHash) {
     try {
-        var creds = await getCreds();
-        if (!creds) return null;
-        var rawKey = deriveAaKey(creds);
-        if (!rawKey) return null;
+        var keys = await fetchKeygen();
+        if (!keys) return null;
 
         var interval = 5 * 60 * 1000;
         var ts = Math.floor(Date.now() / interval) * interval;
-        var epoch = creds.epoch;
-        var buildId = creds.buildId;
 
-        var ivInput, payload;
-        if (variant === 1) {
-            ivInput = epoch + ':' + queryHash + ':' + ts;
-            payload = JSON.stringify({ v: 1, ts: ts, epoch: parseInt(epoch), qh: queryHash });
-        } else {
-            ivInput = epoch + ':' + buildId + ':' + queryHash + ':' + ts;
-            payload = JSON.stringify({ v: 1, ts: ts, epoch: parseInt(epoch), buildId: String(buildId), qh: queryHash });
-        }
+        var payload = '{"v":1,"ts":' + ts + ',"epoch":' + keys.epoch
+                    + ',"buildId":"' + keys.build_id + '","qh":"' + queryHash
+                    + '","k":"' + keys.lane + '"}';
 
-        var iv = puresha256(ivInput).slice(0, 12);
+        var iv = puresha256(keys.epoch + ':' + queryHash + ':' + ts).slice(0, 12);
+        var rawKey = hexToBytes(keys.key);
         var ctWithTag = aesGcmEncryptPure(rawKey, iv, stringToUtf8Bytes(payload));
 
         // Envelope: [1][iv(12)][ciphertext+tag]
@@ -390,8 +306,14 @@ async function buildAaReq(queryHash, variant) {
         result.set(ctWithTag, 13);
         return bytesToBase64(result);
     } catch(e) {
+        console.log('[AM] buildAaReq error: ' + e);
         return null;
     }
+}
+
+async function currentLane() {
+    var keys = await fetchKeygen();
+    return keys ? keys.lane : null;
 }
 
 function isCryptoReject(text) {
@@ -402,9 +324,10 @@ function isCryptoReject(text) {
         || text.indexOf('AA_CRYPTO_BUILD_MISMATCH') !== -1;
 }
 
-function buildApiUrl(variables, hash, aaReq) {
+function buildApiUrl(variables, hash, aaReq, lane) {
     var extObj = { persistedQuery: { version: 1, sha256Hash: hash } };
     if (aaReq) extObj.aaReq = aaReq;
+    if (lane) extObj.k = lane;
     return ALLANIME_API + '?variables=' + encodeURIComponent(JSON.stringify(variables))
          + '&extensions=' + encodeURIComponent(JSON.stringify(extObj));
 }
@@ -422,32 +345,36 @@ async function apiCall(url, headers) {
 async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
     var headers = customHeaders || HEADERS;
 
-    // Requests that don't need auth
     if (!includeAaReq) {
-        var plain = await apiCall(buildApiUrl(variables, hash, null), headers);
+        var plain = await apiCall(buildApiUrl(variables, hash, null, null), headers);
         if (!plain) return null;
         try { return JSON.parse(plain); } catch(e) { return null; }
     }
 
-    // Auth'd requests: try each payload variant until one is accepted
-    for (var variant = 0; variant <= 1; variant++) {
-        var aaReq = await buildAaReq(hash, variant);
-        if (!aaReq) continue;
+    var aaReq = await buildAaReq(hash);
+    var lane = await currentLane();
+    if (!aaReq) { console.log('[AM] aaReq build failed'); return null; }
 
-        var text = await apiCall(buildApiUrl(variables, hash, aaReq), headers);
-        if (!text) continue;
+    var text = await apiCall(buildApiUrl(variables, hash, aaReq, lane), headers);
+    if (!text) return null;
 
+    if (isCryptoReject(text)) {
+        // Key may have just rotated - drop cache, refetch once, retry.
+        console.log('[AM] token rejected, refreshing keygen');
+        keygenCache.keys = null;
+        keygenCache.ts = 0;
+        var aaReq2 = await buildAaReq(hash);
+        var lane2 = await currentLane();
+        if (!aaReq2) return null;
+        text = await apiCall(buildApiUrl(variables, hash, aaReq2, lane2), headers);
+        if (!text) return null;
         if (isCryptoReject(text)) {
-            console.log('[AM] variant ' + variant + ' rejected');
-            continue;
+            console.log('[AM] token rejected after refresh');
+            return null;
         }
-
-        if (variant > 0) console.log('[AM] variant ' + variant + ' accepted');
-        try { return JSON.parse(text); } catch(e) { return null; }
     }
 
-    console.log('[AM] all aaReq variants rejected');
-    return null;
+    try { return JSON.parse(text); } catch(e) { return null; }
 }
 
 async function resolveStreamUrl(source) {
@@ -602,7 +529,8 @@ async function extractStreamUrl(slug) {
         if (data && data.data) {
             if (data.data._m && data.data.tobeparsed) {
                 try {
-                    var decrypted = decodeTobeparsed(data.data.tobeparsed, null);
+                    var kg = await fetchKeygen();
+                    var decrypted = decodeTobeparsed(data.data.tobeparsed, kg ? kg.key : null);
                     var parsed = JSON.parse(decrypted);
                     sourceUrls = (parsed && parsed.episode && parsed.episode.sourceUrls) || [];
                 } catch(e) {}
