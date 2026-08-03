@@ -20,8 +20,10 @@ var HEADERS = {
 
 var SOURCES_HEADERS = {
     'User-Agent': ALLANIME_UA,
-    'Origin': 'https://youtu-chan.com',
-    'Referer': 'https://youtu-chan.com'
+    'Origin': ALLANIME_REFR,
+    'Referer': ALLANIME_REFR,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json, text/plain, */*'
 };
 
 var HEX_MAP = {
@@ -352,10 +354,15 @@ async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
     }
 
     var aaReq = await buildAaReq(hash);
-    var lane = await currentLane();
+    var kg = await fetchKeygen();
+    var lane = kg ? kg.lane : null;
     if (!aaReq) { console.log('[AM] aaReq build failed'); return null; }
 
-    var text = await apiCall(buildApiUrl(variables, hash, aaReq, lane), headers);
+    var authHeaders = {};
+    for (var hk in headers) { if (headers.hasOwnProperty(hk)) authHeaders[hk] = headers[hk]; }
+    if (kg && kg.build_id) authHeaders['x-build-id'] = kg.build_id;
+
+    var text = await apiCall(buildApiUrl(variables, hash, aaReq, lane), authHeaders);
     if (!text) return null;
 
     if (isCryptoReject(text)) {
@@ -364,9 +371,12 @@ async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
         keygenCache.keys = null;
         keygenCache.ts = 0;
         var aaReq2 = await buildAaReq(hash);
-        var lane2 = await currentLane();
+        var kg2 = await fetchKeygen();
         if (!aaReq2) return null;
-        text = await apiCall(buildApiUrl(variables, hash, aaReq2, lane2), headers);
+        var authHeaders2 = {};
+        for (var hk2 in headers) { if (headers.hasOwnProperty(hk2)) authHeaders2[hk2] = headers[hk2]; }
+        if (kg2 && kg2.build_id) authHeaders2['x-build-id'] = kg2.build_id;
+        text = await apiCall(buildApiUrl(variables, hash, aaReq2, kg2 ? kg2.lane : null), authHeaders2);
         if (!text) return null;
         if (isCryptoReject(text)) {
             console.log('[AM] token rejected after refresh');
