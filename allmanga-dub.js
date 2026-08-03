@@ -387,6 +387,145 @@ async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
     try { return JSON.parse(text); } catch(e) { return null; }
 }
 
+/* P.A.C.K.E.R. unpacker - some embed pages ship the media URL inside
+   eval(function(p,a,c,k,e,d){...}) packed script blocks. */
+function unpack(source) {
+    function unbaseFactory(base) {
+        var ALPHA62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        if (base >= 2 && base <= 36) {
+            return function(v) { return parseInt(v, base); };
+        }
+        var alphabet = ALPHA62.substr(0, base);
+        var dict = {};
+        for (var i = 0; i < alphabet.length; i++) dict[alphabet[i]] = i;
+        return function(v) {
+            var ret = 0;
+            var chars = String(v).split('').reverse();
+            for (var j = 0; j < chars.length; j++) {
+                ret += Math.pow(base, j) * dict[chars[j]];
+            }
+            return ret;
+        };
+    }
+
+    var juicers = [
+        /\}\('(.*)', *(\d+|\[\]), *(\d+), *'(.*)'\.split\('\|'\), *(\d+), *(.*)\)\)/,
+        /\}\('(.*)', *(\d+|\[\]), *(\d+), *'(.*)'\.split\('\|'\)/
+    ];
+    var args = null;
+    for (var k = 0; k < juicers.length; k++) {
+        args = juicers[k].exec(source);
+        if (args) break;
+    }
+    if (!args) throw new Error('unpack: unrecognised structure');
+
+    var payload = args[1];
+    var symtab = args[4].split('|');
+    var radix = parseInt(args[2]) || 36;
+    var unbase = unbaseFactory(radix);
+
+    return payload.replace(/\b\w+\b/g, function(word) {
+        var idx = (radix === 1) ? parseInt(word) : unbase(word);
+        return symtab[idx] || word;
+    });
+}
+
+/* ---- iframe embed resolvers -------------------------------------------
+   Currently-airing episodes often have no "--" clock sources yet, only plain
+   iframe embeds. These scrape the embed page for a direct .mp4/.m3u8. More
+   fragile than clock.json (breaks when a host changes its markup), but it's
+   the only path that works on fresh episodes. ---------------------------- */
+
+function isValidMediaUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    if (url.indexOf('http') !== 0) return false;
+    if (/[\s"'<>]/.test(url)) return false;
+    if (/&quot;|%22/i.test(url)) return false;
+    return /\.(m3u8|mp4)(\?|#|$)/i.test(url);
+}
+
+async function fetchEmbed(url) {
+    try {
+        var fetchPromise = soraFetch(url, {
+            method: 'GET',
+            headers: { 'Referer': ALLANIME_REFR + '/', 'User-Agent': ALLANIME_UA }
+        });
+        var timeoutPromise = new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 4000); });
+        var res = await Promise.race([fetchPromise, timeoutPromise]);
+        if (!res) return null;
+        return typeof res.text === 'function' ? await res.text() : null;
+    } catch(e) { return null; }
+}
+
+async function resolveOkRu(embedUrl, name) {
+    var html = await fetchEmbed(embedUrl);
+    if (!html) return null;
+    var m = html.match(/data-options="([\s\S]*?)"/);
+    if (!m) return null;
+    try {
+        var opts = JSON.parse(m[1].replace(/&quot;/g, '"'));
+        var fv = opts && opts.flashvars;
+        if (!fv || !fv.metadata) return null;
+        var meta = JSON.parse(fv.metadata);
+        var movie = meta && meta.movie;
+        if (!movie) return null;
+        var url = movie.ondemandHls || '';
+        if (!url && movie.videos && movie.videos.length) url = movie.videos[0].url || '';
+        if (!url || url.indexOf('http') !== 0) return null;
+        return [{ title: name || 'Ok', streamUrl: url, headers: { 'Referer': embedUrl, 'User-Agent': ALLANIME_UA } }];
+    } catch(e) { return null; }
+}
+
+async function resolveMp4Upload(embedUrl, name) {
+    var html = await fetchEmbed(embedUrl);
+    if (!html) return null;
+    var m = html.match(/src\s*:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i)
+         || html.match(/["']?file["']?\s*[:=]\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i)
+         || html.match(/(https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*)/i);
+    if (!m || !isValidMediaUrl(m[1])) return null;
+    return [{
+        title: name || 'Mp4Upload',
+        streamUrl: m[1],
+        headers: { 'Referer': embedUrl, 'Origin': 'https://www.mp4upload.com', 'User-Agent': ALLANIME_UA }
+    }];
+}
+
+async function resolveGenericIframe(embedUrl, name) {
+    var html = await fetchEmbed(embedUrl);
+    if (!html) return null;
+
+    var m = html.match(/["']?file["']?\s*[:=]\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i)
+         || html.match(/sources\s*:\s*\[\s*\{[^}]*file\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i)
+         || html.match(/(https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)/i);
+
+    if (!m) {
+        var packed = html.match(/<script[^>]*>\s*(eval\(function\(p,a,c,k,e,d[\s\S]*?)<\/script>/i);
+        if (packed) {
+            try {
+                var un = unpack(packed[1]);
+                m = un.match(/["']?file["']?\s*[:=]\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i)
+                 || un.match(/(https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)/i);
+            } catch(e) {}
+        }
+    }
+
+    if (!m || !isValidMediaUrl(m[1])) return null;
+    return [{ title: name || 'Server', streamUrl: m[1], headers: { 'Referer': embedUrl, 'User-Agent': ALLANIME_UA } }];
+}
+
+async function resolveIframeSource(source) {
+    try {
+        var url = source.sourceUrl;
+        var name = source.sourceName || 'Server';
+        if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(url)) {
+            return [{ title: name, streamUrl: url, headers: { 'Referer': ALLANIME_REFR + '/', 'User-Agent': ALLANIME_UA } }];
+        }
+        if (/mp4upload\.com/i.test(url)) return await resolveMp4Upload(url, name);
+        if (/ok\.ru\/videoembed\//i.test(url)) return await resolveOkRu(url, name);
+        return await resolveGenericIframe(url, name);
+    } catch(e) { return null; }
+}
+
 async function resolveStreamUrl(source) {
     try {
         var rawUrl = source.sourceUrl;
@@ -581,17 +720,26 @@ async function extractStreamUrl(slug) {
 
         var streams = [];
         if (sourceUrls.length) {
-            var validSources = [], seenUrls = {};
+            var clockSources = [], iframeSources = [], seenUrls = {};
             for (var i = 0; i < sourceUrls.length; i++) {
                 var src = sourceUrls[i];
                 if (!src.sourceUrl) continue;
-                if (src.sourceUrl.indexOf('--') !== 0) continue;
                 if (seenUrls[src.sourceUrl]) continue;
                 seenUrls[src.sourceUrl] = true;
-                validSources.push(src);
+                if (src.sourceUrl.indexOf('--') === 0) {
+                    clockSources.push(src);
+                } else if (src.sourceUrl.indexOf('http') === 0) {
+                    iframeSources.push(src);
+                }
             }
+
             var promises = [];
-            for (var j = 0; j < validSources.length; j++) promises.push(resolveStreamUrl(validSources[j]));
+            for (var j = 0; j < clockSources.length; j++) promises.push(resolveStreamUrl(clockSources[j]));
+            // Cap iframe attempts - each is a page fetch, and they're only
+            // needed when clock sources are thin or absent.
+            var iframeCap = Math.min(iframeSources.length, 4);
+            for (var n = 0; n < iframeCap; n++) promises.push(resolveIframeSource(iframeSources[n]));
+
             var results = await Promise.all(promises);
             for (var k = 0; k < results.length; k++) {
                 if (!results[k]) continue;
