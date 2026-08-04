@@ -252,15 +252,24 @@ var keygenCache = { keys: null, ts: 0 };
 // The AES key is published ready-made rather than derived locally - the
 // server's key is no longer a plain mask XOR partB, so deriving it ourselves
 // produces a well-formed token the server rejects.
-async function fetchKeygen() {
+async function fetchKeygen(force) {
     var now = Date.now();
-    if (keygenCache.keys && (now - keygenCache.ts < 90000)) return keygenCache.keys;
+    if (force) { keygenCache.keys = null; keygenCache.ts = 0; }
+    // Short window only - key, epoch and query_hash all rotate server-side,
+    // and a stale value fails closed (token rejected, no streams).
+    if (keygenCache.keys && (now - keygenCache.ts < 20000)) return keygenCache.keys;
 
     for (var i = 0; i < KEYGEN_URLS.length; i++) {
         try {
-            var res = await soraFetch(KEYGEN_URLS[i], {
+            var bust = KEYGEN_URLS[i] + (KEYGEN_URLS[i].indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now();
+            var res = await soraFetch(bust, {
                 method: 'GET',
-                headers: { 'User-Agent': ALLANIME_UA, 'Accept': 'application/json' }
+                headers: {
+                    'User-Agent': ALLANIME_UA,
+                    'Accept': 'application/json',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
             });
             if (!res) continue;
             var text = typeof res.text === 'function' ? await res.text() : null;
@@ -271,11 +280,12 @@ async function fetchKeygen() {
                     build_id: String(j.build_id),
                     epoch: String(j.epoch),
                     lane: String(j.lane),
-                    key: String(j.key)
+                    key: String(j.key),
+                    query_hash: j.query_hash ? String(j.query_hash) : null
                 };
                 keygenCache.keys = keys;
                 keygenCache.ts = Date.now();
-                console.log('[AM] keygen ok epoch=' + keys.epoch + ' buildId=' + keys.build_id + ' lane=' + keys.lane);
+                console.log('[AM] keygen ok epoch=' + keys.epoch + ' buildId=' + keys.build_id + ' lane=' + keys.lane + ' qh=' + (keys.query_hash ? keys.query_hash.substring(0, 12) : 'none'));
                 return keys;
             }
         } catch(e) {}
@@ -346,6 +356,7 @@ async function apiCall(url, headers) {
 
 async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
     var headers = customHeaders || HEADERS;
+    var isAuthedHash = !!includeAaReq;
 
     if (!includeAaReq) {
         var plain = await apiCall(buildApiUrl(variables, hash, null, null), headers);
@@ -368,15 +379,17 @@ async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
     if (isCryptoReject(text)) {
         // Key may have just rotated - drop cache, refetch once, retry.
         console.log('[AM] token rejected, refreshing keygen');
-        keygenCache.keys = null;
-        keygenCache.ts = 0;
-        var aaReq2 = await buildAaReq(hash);
-        var kg2 = await fetchKeygen();
+        var kg2 = await fetchKeygen(true);
+        // If the query hash itself rotated, retrying with the old one just
+        // fails the same way - adopt the refreshed hash for both URL and token.
+        var hash2 = (kg2 && kg2.query_hash && isAuthedHash) ? kg2.query_hash : hash;
+        if (hash2 !== hash) console.log('[AM] query hash rotated -> ' + hash2.substring(0, 12));
+        var aaReq2 = await buildAaReq(hash2);
         if (!aaReq2) return null;
         var authHeaders2 = {};
         for (var hk2 in headers) { if (headers.hasOwnProperty(hk2)) authHeaders2[hk2] = headers[hk2]; }
         if (kg2 && kg2.build_id) authHeaders2['x-build-id'] = kg2.build_id;
-        text = await apiCall(buildApiUrl(variables, hash, aaReq2, kg2 ? kg2.lane : null), authHeaders2);
+        text = await apiCall(buildApiUrl(variables, hash2, aaReq2, kg2 ? kg2.lane : null), authHeaders2);
         if (!text) return null;
         if (isCryptoReject(text)) {
             console.log('[AM] token rejected after refresh');
@@ -717,7 +730,11 @@ async function extractStreamUrl(slug) {
         var parts = slug.split('|');
         var showId = parts[0], epNumber = parts[1];
         var variables = { showId: showId, translationType: 'dub', episodeString: String(epNumber) };
-        var data = await allanimeGet(variables, SOURCES_HASH, SOURCES_HEADERS, true);
+        // The persisted-query hash rotates server-side. Prefer the one the
+        // keygen publishes; fall back to the last known-good captured value.
+        var kgh = await fetchKeygen();
+        var srcHash = (kgh && kgh.query_hash) ? kgh.query_hash : SOURCES_HASH;
+        var data = await allanimeGet(variables, srcHash, SOURCES_HEADERS, true);
 
         var sourceUrls = [];
         if (data && data.data) {
