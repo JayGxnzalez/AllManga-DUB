@@ -247,6 +247,12 @@ var FALLBACK_KEYGEN = {
     key: 'f7bd37902f0d7fc067d82c7a4f9c52dff5f1539561773d38e20012d2b91f442e'
 };
 
+// Observed live on mkissa.to. The keygen file lags the server, so when these
+// are set they take precedence over whatever it publishes. Clear them once the
+// keygen catches up.
+var OVERRIDE_BUILD_ID = '83';
+var OVERRIDE_QUERY_HASH = 'dfa61c3f3098cfdfb3886e950745d3ad8d106f39093aea8d40ed57b5d873998d';
+
 var keygenCache = { keys: null, ts: 0 };
 
 // The AES key is published ready-made rather than derived locally - the
@@ -277,11 +283,11 @@ async function fetchKeygen(force) {
             var j = JSON.parse(text);
             if (j && j.key && j.build_id && j.lane && j.epoch !== undefined) {
                 var keys = {
-                    build_id: String(j.build_id),
+                    build_id: OVERRIDE_BUILD_ID || String(j.build_id),
                     epoch: String(j.epoch),
                     lane: String(j.lane),
                     key: String(j.key),
-                    query_hash: j.query_hash ? String(j.query_hash) : null
+                    query_hash: OVERRIDE_QUERY_HASH || (j.query_hash ? String(j.query_hash) : null)
                 };
                 keygenCache.keys = keys;
                 keygenCache.ts = Date.now();
