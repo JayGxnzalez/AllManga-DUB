@@ -378,6 +378,7 @@ async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
 
     if (isCryptoReject(text)) {
         // Key may have just rotated - drop cache, refetch once, retry.
+        console.log('[AM] reject#1: ' + text.substring(0, 220));
         console.log('[AM] token rejected, refreshing keygen');
         var kg2 = await fetchKeygen(true);
         // If the query hash itself rotated, retrying with the old one just
@@ -392,7 +393,7 @@ async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
         text = await apiCall(buildApiUrl(variables, hash2, aaReq2, kg2 ? kg2.lane : null), authHeaders2);
         if (!text) return null;
         if (isCryptoReject(text)) {
-            console.log('[AM] token rejected after refresh');
+            console.log('[AM] reject#2: ' + text.substring(0, 220));
             return null;
         }
     }
