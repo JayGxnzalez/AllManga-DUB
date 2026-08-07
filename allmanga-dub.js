@@ -247,11 +247,13 @@ var FALLBACK_KEYGEN = {
     key: 'f7bd37902f0d7fc067d82c7a4f9c52dff5f1539561773d38e20012d2b91f442e'
 };
 
-// Observed live on mkissa.to. The keygen file lags the server, so when these
-// are set they take precedence over whatever it publishes. Clear them once the
-// keygen catches up.
-var OVERRIDE_BUILD_ID = '83';
-var OVERRIDE_QUERY_HASH = 'dfa61c3f3098cfdfb3886e950745d3ad8d106f39093aea8d40ed57b5d873998d';
+// Manual overrides for when the keygen file lags the server. Tested with
+// build 83 / its matching hash against the published key: still rejected,
+// because partB itself now comes from a bootstrap endpoint (x-aa-boot) and
+// the published key predates that change. Left empty deliberately - setting
+// them would only mask whatever the keygen eventually publishes.
+var OVERRIDE_BUILD_ID = '';
+var OVERRIDE_QUERY_HASH = '';
 
 var keygenCache = { keys: null, ts: 0 };
 
@@ -723,6 +725,24 @@ async function aaLegacyStreams(showId, epNumber) {
                 streamUrl: cdnUrl(info.vidPath),
                 headers: { Referer: CDN_BASE + '/', Origin: CDN_BASE }
             });
+        }
+        // These CDN paths have needed an auth token since the bootstrap change,
+        // so they 404. Probe once rather than handing the player a dead URL and
+        // making it sit through a load timeout.
+        if (streams.length) {
+            var probeOk = false;
+            try {
+                var pr = await soraFetch(streams[0].streamUrl, {
+                    method: 'GET',
+                    headers: { 'Referer': CDN_BASE + '/', 'User-Agent': ALLANIME_UA }
+                });
+                var ptxt = pr && typeof pr.text === 'function' ? await pr.text() : null;
+                probeOk = !!(ptxt && ptxt.length > 200);
+            } catch(e) {}
+            if (!probeOk) {
+                console.log('[AM] legacy fallback URL unreachable - reporting no sources');
+                return [];
+            }
         }
         console.log('[AM] legacy fallback -> ' + streams.length + ' stream(s)');
         return streams;
