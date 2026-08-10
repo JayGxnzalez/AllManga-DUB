@@ -482,9 +482,8 @@ async function aaFetchClockSource(src, tt) {
 
         links.forEach(l => {
             if (!l || !l.link) return;
-            const res = l.resolution || (l.hls ? 'HLS' : 'MP4');
             out.streams.push({
-                title: tt.toUpperCase() + ' ' + (src.sourceName || 'Source') + (res ? ' ' + res : ''),
+                title: (src.sourceName || 'Source'),
                 streamUrl: l.link,
                 headers: {
                     'Referer': (l.headers && l.headers.Referer) || CLOCK_BASE + '/',
@@ -505,7 +504,7 @@ async function resolveIframeSource(embedUrl, sourceName, tt) {
     const direct = extractDirectMediaUrl(embedUrl);
     if (direct) {
         return {
-            title: tt.toUpperCase() + ' ' + (sourceName || 'Source'),
+            title: (sourceName || 'Source'),
             streamUrl: direct,
             headers: { 'Referer': embedUrl, 'User-Agent': UA }
         };
@@ -552,7 +551,7 @@ async function resolveOkRu(embedUrl, sourceName, tt) {
     }
     if (!url || !/^https?:\/\//i.test(url)) return null;
     return {
-        title: tt.toUpperCase() + ' ' + (sourceName || 'Ok'),
+        title: (sourceName || 'Ok'),
         streamUrl: url,
         headers: { 'Referer': embedUrl, 'User-Agent': UA }
     };
@@ -569,7 +568,7 @@ async function resolveMp4Upload(embedUrl, sourceName, tt) {
         || html.match(/(https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*)/i);
     if (!m) return null;
     return {
-        title: tt.toUpperCase() + ' ' + (sourceName || 'Mp4Upload'),
+        title: (sourceName || 'Mp4Upload'),
         streamUrl: m[1],
         headers: { 'Referer': embedUrl, 'Origin': 'https://www.mp4upload.com', 'User-Agent': UA }
     };
@@ -603,7 +602,7 @@ async function resolveGenericIframe(embedUrl, sourceName, tt) {
     const mediaUrl = m[1];
     if (!isValidMediaUrl(mediaUrl)) return null;
     return {
-        title: tt.toUpperCase() + ' ' + (sourceName || 'Source'),
+        title: (sourceName || 'Source'),
         streamUrl: mediaUrl,
         headers: { 'Referer': embedUrl, 'User-Agent': UA }
     };
@@ -637,14 +636,14 @@ async function aaLegacyStreams(showId, episode) {
             var path = String(info.vidPath).trim();
             if (/^https?:\/\//i.test(path)) {
                 streams.push({
-                    title: label.toUpperCase() + ' ' + (info.vidResolution ? info.vidResolution + 'p' : 'auto'),
+                    title: (info.vidResolution ? info.vidResolution + 'p' : 'auto'),
                     streamUrl: path,
                     headers: STREAM_HEADERS
                 });
             } else {
                 CDN_BASES.forEach(function (base) {
                     streams.push({
-                        title: label.toUpperCase() + ' ' + (info.vidResolution ? info.vidResolution + 'p' : 'auto'),
+                        title: (info.vidResolution ? info.vidResolution + 'p' : 'auto'),
                         streamUrl: base + '/' + path.replace(/^\/+/, ''),
                         headers: {
                             'Referer': base + '/',
