@@ -240,11 +240,17 @@ var KEYGEN_URLS = [
 ];
 
 // Last-resort constants if the keygen endpoint is unreachable.
+// Observed-live values. The sdaqo keygen file lags the server (still on
+// build 81 / epoch 6889 under the old scheme), so these take precedence when
+// its build_id is older than ours.
 var FALLBACK_KEYGEN = {
-    build_id: '81',
-    epoch: '6889',
+    build_id: '97',
+    epoch: '2953',
     lane: 'k7',
-    key: 'f7bd37902f0d7fc067d82c7a4f9c52dff5f1539561773d38e20012d2b91f442e'
+    key: '695af2782a31edc2c99a8b21a781d535fb0eab3b8574647f03931d3c3bed5f16',
+    // Confirmed accepted against build 97. Rotates with the build, so it
+    // travels with these constants rather than living in SOURCES_HASH.
+    query_hash: '71e009fdd38806cba610bdbb76683f11d2aa8f1c27167269a85fbdae8c4ee4b6'
 };
 
 // Manual overrides for when the keygen file lags the server. Tested with
@@ -284,6 +290,16 @@ async function fetchKeygen(force) {
             if (!text) continue;
             var j = JSON.parse(text);
             if (j && j.key && j.build_id && j.lane && j.epoch !== undefined) {
+                // Take the keygen only if it's at least as new as our known
+                // values - otherwise it drags us back to a dead scheme.
+                var remoteBuild = parseInt(j.build_id, 10) || 0;
+                var localBuild = parseInt(FALLBACK_KEYGEN.build_id, 10) || 0;
+                if (remoteBuild < localBuild) {
+                    console.log('[AM] keygen behind (build ' + remoteBuild + ' < ' + localBuild + '), using local values');
+                    keygenCache.keys = FALLBACK_KEYGEN;
+                    keygenCache.ts = Date.now();
+                    return FALLBACK_KEYGEN;
+                }
                 var keys = {
                     build_id: OVERRIDE_BUILD_ID || String(j.build_id),
                     epoch: String(j.epoch),
