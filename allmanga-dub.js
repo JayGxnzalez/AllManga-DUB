@@ -234,6 +234,8 @@ function aesGcmEncryptPure(key, iv, plaintext) {
 // variant 0 = current site shape  -> IV: epoch:buildId:qh:ts   payload includes buildId
 // variant 1 = ani-cli shape       -> IV: epoch:qh:ts           payload omits buildId
 // The server appears to accept more than one payload version, so we try both.
+var EPISODE_QUERY = 'query(\n$showId: String!\n$translationType: VaildTranslationTypeEnumType!\n$episodeString: String!\n) {\nepisode(\nshowId: $showId\ntranslationType: $translationType\nepisodeString: $episodeString\n) {\nepisodeString\nuploadDate\nsourceUrls\nthumbnail\nnotes\nshow{\n\n\n_id\nname\nenglishName\nnativeName\nslugTime\n\nthumbnail\n\ntbObj {\n  u\n  sm\n  md\n  ts\n}\n\nlastEpisodeInfo\nlastEpisodeDate\ntype\nseason\nscore\nairedStart\navailableEpisodes\nepisodeDuration\nepisodeCount\n# lastUpdateStart\nlastUpdateEnd\ncharacterCount\n\ndescription\nbroadcastInterval\nbanner\ncharacters\navailableEpisodesDetail\nnameOnlyString\ncharacters\nisAdult\nrelatedShows\nrelatedMangas\naltNames\ndisqusIds\n}\npageStatus{\n_id\nnotes\npageId\nshowId\n\n# ranks:[Object]\nviews\nlikesCount\ncommentCount\ndislikesCount\nboostsCount\nreviewCount\nuserScoreCount\nuserScoreTotalValue\nuserScoreAverValue\nviewers{\nfirstViewers{\nviewCount\nlastWatchedDate\nuser{\n\n  \n  \n  _id\n  username\n  displayName\n  createdAt\n  picture\n  reputation\n  roleLevel\n\n  \n  followerCount\n  followingCount\n\n  hideMe\n  brief\n\n}\n}\nrecViewers{\nviewCount\nlastWatchedDate\nuser{\n\n  \n  \n  _id\n  username\n  displayName\n  createdAt\n  picture\n  reputation\n  roleLevel\n\n  \n  followerCount\n  followingCount\n\n  hideMe\n  brief\n\n}\n}\n}\n\n}\nepisodeInfo{\nnotes\nthumbnails\n\ntbObj {\n  u\n  sm\n  md\n  ts\n}\n\nvidInforssub\nuploadDates\nvidInforsdub\nvidInforsraw\ndescription\n}\nversionFix\n}\n}\n';
+
 var KEYGEN_URLS = [
     'https://raw.githubusercontent.com/sdaqo/anipy-cli/refs/heads/key-gen/scripts/keygen/keygen.json',
     'https://raw.githubusercontent.com/sdaqo/anipy-cli/key-gen/scripts/keygen/keygen.json'
@@ -380,7 +382,6 @@ async function apiCall(url, headers) {
 
 async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
     var headers = customHeaders || HEADERS;
-    var isAuthedHash = !!includeAaReq;
 
     if (!includeAaReq) {
         var plain = await apiCall(buildApiUrl(variables, hash, null, null), headers);
@@ -388,203 +389,64 @@ async function allanimeGet(variables, hash, customHeaders, includeAaReq) {
         try { return JSON.parse(plain); } catch(e) { return null; }
     }
 
-    var aaReq = await buildAaReq(hash);
     var kg = await fetchKeygen();
     var lane = kg ? kg.lane : null;
+    var aaReq = await buildAaReq(hash);
     if (!aaReq) { console.log('[AM] aaReq build failed'); return null; }
 
     var authHeaders = {};
     for (var hk in headers) { if (headers.hasOwnProperty(hk)) authHeaders[hk] = headers[hk]; }
     if (kg && kg.build_id) authHeaders['x-build-id'] = kg.build_id;
 
-    var text = await apiCall(buildApiUrl(variables, hash, aaReq, lane), authHeaders);
-    if (!text) return null;
+    var url = buildApiUrl(variables, hash, aaReq, lane);
+    var extObj = { persistedQuery: { version: 1, sha256Hash: hash }, aaReq: aaReq };
+    if (lane) extObj.k = lane;
 
-    if (isCryptoReject(text)) {
-        // Key may have just rotated - drop cache, refetch once, retry.
-        console.log('[AM] reject#1: ' + text.substring(0, 220));
-        console.log('[AM] token rejected, refreshing keygen');
-        var kg2 = await fetchKeygen(true);
-        // If the query hash itself rotated, retrying with the old one just
-        // fails the same way - adopt the refreshed hash for both URL and token.
-        var hash2 = (kg2 && kg2.query_hash && isAuthedHash) ? kg2.query_hash : hash;
-        if (hash2 !== hash) console.log('[AM] query hash rotated -> ' + hash2.substring(0, 12));
-        var aaReq2 = await buildAaReq(hash2);
-        if (!aaReq2) return null;
-        var authHeaders2 = {};
-        for (var hk2 in headers) { if (headers.hasOwnProperty(hk2)) authHeaders2[hk2] = headers[hk2]; }
-        if (kg2 && kg2.build_id) authHeaders2['x-build-id'] = kg2.build_id;
-        text = await apiCall(buildApiUrl(variables, hash2, aaReq2, kg2 ? kg2.lane : null), authHeaders2);
-        if (!text) return null;
-        if (isCryptoReject(text)) {
-            console.log('[AM] reject#2: ' + text.substring(0, 220));
-            return null;
-        }
-    }
+    // Try each host: some register the persisted query, others may not.
+    for (var hi = 0; hi < API_HOSTS.length; hi++) {
+        var hostUrl = API_HOSTS[hi] + url.substring(url.indexOf('?'));
+        var text = await apiCall(hostUrl, authHeaders);
+        if (!text) continue;
 
-    try { return JSON.parse(text); } catch(e) { return null; }
-}
+        var errMsg = '';
+        try {
+            var probe = JSON.parse(text);
+            errMsg = (probe && probe.errors && probe.errors[0] && probe.errors[0].message) || '';
+        } catch(e) {}
 
-/* P.A.C.K.E.R. unpacker - some embed pages ship the media URL inside
-   eval(function(p,a,c,k,e,d){...}) packed script blocks. */
-function unpack(source) {
-    function unbaseFactory(base) {
-        var ALPHA62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        if (base >= 2 && base <= 36) {
-            return function(v) { return parseInt(v, base); };
-        }
-        var alphabet = ALPHA62.substr(0, base);
-        var dict = {};
-        for (var i = 0; i < alphabet.length; i++) dict[alphabet[i]] = i;
-        return function(v) {
-            var ret = 0;
-            var chars = String(v).split('').reverse();
-            for (var j = 0; j < chars.length; j++) {
-                ret += Math.pow(base, j) * dict[chars[j]];
-            }
-            return ret;
-        };
-    }
-
-    var juicers = [
-        /\}\('(.*)', *(\d+|\[\]), *(\d+), *'(.*)'\.split\('\|'\), *(\d+), *(.*)\)\)/,
-        /\}\('(.*)', *(\d+|\[\]), *(\d+), *'(.*)'\.split\('\|'\)/
-    ];
-    var args = null;
-    for (var k = 0; k < juicers.length; k++) {
-        args = juicers[k].exec(source);
-        if (args) break;
-    }
-    if (!args) throw new Error('unpack: unrecognised structure');
-
-    var payload = args[1];
-    var symtab = args[4].split('|');
-    var radix = parseInt(args[2]) || 36;
-    var unbase = unbaseFactory(radix);
-
-    return payload.replace(/\b\w+\b/g, function(word) {
-        var idx = (radix === 1) ? parseInt(word) : unbase(word);
-        return symtab[idx] || word;
-    });
-}
-
-/* ---- iframe embed resolvers -------------------------------------------
-   Currently-airing episodes often have no "--" clock sources yet, only plain
-   iframe embeds. These scrape the embed page for a direct .mp4/.m3u8. More
-   fragile than clock.json (breaks when a host changes its markup), but it's
-   the only path that works on fresh episodes. ---------------------------- */
-
-function isValidMediaUrl(url) {
-    if (!url || typeof url !== 'string') return false;
-    if (url.indexOf('http') !== 0) return false;
-    if (/[\s"'<>]/.test(url)) return false;
-    if (/&quot;|%22/i.test(url)) return false;
-    return /\.(m3u8|mp4)(\?|#|$)/i.test(url);
-}
-
-async function fetchEmbed(url) {
-    try {
-        var fetchPromise = soraFetch(url, {
-            method: 'GET',
-            headers: { 'Referer': ALLANIME_REFR + '/', 'User-Agent': ALLANIME_UA }
-        });
-        var timeoutPromise = new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 4000); });
-        var res = await Promise.race([fetchPromise, timeoutPromise]);
-        if (!res) { console.log('[AM] embed fetch failed/timeout: ' + String(url).substring(0, 40)); return null; }
-        return typeof res.text === 'function' ? await res.text() : null;
-    } catch(e) { console.log('[AM] embed fetch error: ' + e); return null; }
-}
-
-async function resolveOkRu(embedUrl, name) {
-    var html = await fetchEmbed(embedUrl);
-    if (!html) return null;
-
-    // The page embeds JSON inside an HTML attribute, so quotes arrive as
-    // &quot; and the payload is nested/re-escaped. Pulling the URL directly
-    // is far more robust than unescaping and JSON.parsing the whole blob.
-    var unescaped = html.replace(/&quot;/g, '"').replace(/\\u0026/g, '&').replace(/\\\//g, '/');
-
-    var m = unescaped.match(/"ondemandHls"\s*:\s*"([^"]+)"/)
-         || unescaped.match(/"hlsManifestUrl"\s*:\s*"([^"]+)"/)
-         || unescaped.match(/(https?:\/\/[^\s"']+\.m3u8[^\s"']*)/i);
-
-    if (!m) {
-        // fall back to a progressive MP4 from the videos[] array
-        m = unescaped.match(/"url"\s*:\s*"(https?:\/\/[^"]+\.mp4[^"]*)"/i);
-    }
-
-    if (!m) return null;
-    var url = m[1].replace(/\\/g, '');
-    if (url.indexOf('http') !== 0) return null;
-
-    return [{
-        title: name || 'Ok',
-        streamUrl: url,
-        headers: { 'Referer': embedUrl, 'User-Agent': ALLANIME_UA }
-    }];
-}
-
-async function resolveMp4Upload(embedUrl, name) {
-    var html = await fetchEmbed(embedUrl);
-    if (!html) return null;
-    var m = html.match(/src\s*:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i)
-         || html.match(/["']?file["']?\s*[:=]\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i)
-         || html.match(/(https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*)/i);
-    if (!m || !isValidMediaUrl(m[1])) return null;
-    return [{
-        title: name || 'Mp4Upload',
-        streamUrl: m[1],
-        headers: { 'Referer': embedUrl, 'Origin': 'https://www.mp4upload.com', 'User-Agent': ALLANIME_UA }
-    }];
-}
-
-async function resolveGenericIframe(embedUrl, name) {
-    var html = await fetchEmbed(embedUrl);
-    if (!html) return null;
-
-    var m = html.match(/["']?file["']?\s*[:=]\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i)
-         || html.match(/sources\s*:\s*\[\s*\{[^}]*file\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i)
-         || html.match(/(https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)/i);
-
-    if (!m) {
-        var packed = html.match(/<script[^>]*>\s*(eval\(function\(p,a,c,k,e,d[\s\S]*?)<\/script>/i);
-        if (packed) {
+        // Query not registered on this host - POST the full text once to register it.
+        if (errMsg.indexOf('PersistedQueryNotFound') === 0) {
+            console.log('[AM] PersistedQueryNotFound on host ' + hi + ', registering via POST');
             try {
-                var un = unpack(packed[1]);
-                m = un.match(/["']?file["']?\s*[:=]\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/i)
-                 || un.match(/(https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)/i);
-            } catch(e) {}
+                var pres = await soraFetch(hostUrl, {
+                    method: 'POST',
+                    headers: authHeaders,
+                    body: JSON.stringify({ query: EPISODE_QUERY, variables: variables, extensions: extObj })
+                });
+                text = (pres && typeof pres.text === 'function') ? await pres.text() : null;
+                if (!text) continue;
+                try {
+                    var probe2 = JSON.parse(text);
+                    errMsg = (probe2 && probe2.errors && probe2.errors[0] && probe2.errors[0].message) || '';
+                } catch(e) {}
+            } catch(e) { continue; }
         }
+
+        if (errMsg.indexOf('Too many requests') === 0) {
+            console.log('[AM] rate limited on host ' + hi + ', trying next');
+            continue;
+        }
+
+        if (isCryptoReject(text)) {
+            console.log('[AM] crypto reject on host ' + hi + ': ' + text.substring(0, 140));
+            continue;
+        }
+
+        try { return JSON.parse(text); } catch(e) { continue; }
     }
 
-    if (!m || !isValidMediaUrl(m[1])) return null;
-    return [{ title: name || 'Server', streamUrl: m[1], headers: { 'Referer': embedUrl, 'User-Agent': ALLANIME_UA } }];
-}
-
-async function resolveIframeSource(source) {
-    var name = (source && source.sourceName) || 'Server';
-    try {
-        var url = source.sourceUrl;
-        var out;
-        if (/\.(?:m3u8|mp4)(?:[?#]|$)/i.test(url)) {
-            out = [{ title: name, streamUrl: url, headers: { 'Referer': ALLANIME_REFR + '/', 'User-Agent': ALLANIME_UA } }];
-        } else if (/mp4upload\.com/i.test(url)) {
-            out = await resolveMp4Upload(url, name);
-        } else if (/ok\.ru\/videoembed\//i.test(url)) {
-            out = await resolveOkRu(url, name);
-        } else {
-            out = await resolveGenericIframe(url, name);
-        }
-        // Uni and Fm-Hls serve redirect stubs (~1.5KB, no media URL present),
-        // so their failure is expected and not worth logging every episode.
-        if ((!out || !out.length) && !/^(Uni|Fm-Hls)$/i.test(name)) {
-            console.log('[AM] iframe ' + name + ': no media found');
-        }
-        return out;
-    } catch(e) {
-        console.log('[AM] iframe ' + name + ' error: ' + e);
-        return null;
-    }
+    console.log('[AM] all hosts failed');
+    return null;
 }
 
 async function resolveStreamUrl(source) {
