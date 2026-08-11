@@ -493,7 +493,22 @@ async function aaFetchClockSource(src, tt) {
             console.log('Clock source ' + (src.sourceName || '?') + ': no response');
             return out;
         }
-        const json = await resp.json();
+        // clock.json sometimes returns a non-JSON body (error string), and
+        // soraFetch may hand back an already-parsed object - handle both
+        // instead of letting resp.json() throw.
+        let json = null;
+        try {
+            const raw = (typeof resp.text === 'function') ? await resp.text() : null;
+            if (raw && typeof raw === 'string') {
+                const t = raw.trim();
+                if (t.charAt(0) === '{' || t.charAt(0) === '[') json = JSON.parse(t);
+            } else if (raw && typeof raw === 'object') {
+                json = raw;
+            }
+        } catch (e) { json = null; }
+        if (!json) {
+            try { json = await resp.json(); } catch (e) { json = null; }
+        }
         const links = (json && json.links) || [];
         if (!links.length) {
             console.log('Clock source ' + (src.sourceName || '?') + ': no links');
