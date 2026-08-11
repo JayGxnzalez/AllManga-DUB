@@ -417,7 +417,27 @@ async function aaResolveSources(parsed, tt) {
             })
     ));
 
-    return aaRaceSuccess([clockTask, iframeTask]);
+    // Collect both groups rather than racing them, so the picker shows every
+    // working source. Each group still races internally, so one dead clock
+    // endpoint can't stall the whole lookup.
+    const settled = await Promise.all([clockTask, iframeTask]);
+    const merged = { streams: [], subtitle: '' };
+    const seenUrls = {};
+    settled.forEach(function (part) {
+        if (!part || !part.streams) return;
+        part.streams.forEach(function (st) {
+            if (!st || !st.streamUrl || seenUrls[st.streamUrl]) return;
+            seenUrls[st.streamUrl] = true;
+            merged.streams.push(st);
+        });
+        if (!merged.subtitle && part.subtitle) merged.subtitle = part.subtitle;
+    });
+    try {
+        console.log('Sources: ' + merged.streams.map(function (x) {
+            return (x.title || '?') + ' -> ' + String(x.streamUrl || '').substring(0, 70);
+        }).join(' | '));
+    } catch (e) {}
+    return merged;
 }
 
 function aaOrderByPreference(items, priority) {
@@ -566,7 +586,8 @@ async function resolveMp4Upload(embedUrl, sourceName, tt) {
     let m = html.match(/src\s*:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i)
         || html.match(/["']?file["']?\s*[:=]\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i)
         || html.match(/(https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*)/i);
-    if (!m) return null;
+    if (!m) { console.log('Mp4Upload: no media URL in page (len=' + html.length + ')'); return null; }
+    console.log('Mp4Upload -> ' + m[1]);
     return {
         title: (sourceName || 'Mp4Upload'),
         streamUrl: m[1],
