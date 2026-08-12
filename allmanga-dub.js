@@ -402,9 +402,49 @@ async function aaResolveSources(parsed, tt) {
     const orderedCdn = aaOrderByPreference(cdn, SOURCE_PRIORITY);
     const orderedIframes = aaOrderByPreference(iframes, ['Mp4', 'Ok', 'S-Mp4', 'Luf-Mp4', 'Uv-mp4', 'Default', 'Ak', 'Yt-mp4']).slice(0, 4);
 
-    // Dead clock endpoints can hang ~30s, so race everything: first source
-    // (clock or iframe) to produce a playable link wins.
-    const clockTask = aaRaceSuccess(orderedCdn.map(src => aaFetchClockSource(src, tt)));
+    const merged = { streams: [], subtitle: '' };
+    const seenUrls = {};
+    const addPart = function (part) {
+        if (!part || !part.streams) return;
+        part.streams.forEach(function (st) {
+            if (!st || !st.streamUrl || seenUrls[st.streamUrl]) return;
+            seenUrls[st.streamUrl] = true;
+            merged.streams.push(st);
+        });
+        if (!merged.subtitle && part.subtitle) merged.subtitle = part.subtitle;
+    };
+    const logSources = function () {
+        try {
+            console.log('Sources: ' + merged.streams.map(function (x) {
+                return (x.title || '?') + ' -> ' + String(x.streamUrl || '').substring(0, 70);
+            }).join(' | '));
+        } catch (e) {}
+    };
+
+    // Fast path: 'Default' is the reliable clock mirror and is present on most
+    // finished shows. If it resolves, return immediately rather than waiting on
+    // sibling mirrors like Uv-mp4/Luf-Mp4, which are frequently dead and hang
+    // (no setTimeout available here to bound them).
+    const primary = orderedCdn.filter(function (src) {
+        return (src.sourceName || '') === 'Default';
+    });
+    if (primary.length) {
+        for (let i = 0; i < primary.length; i++) {
+            addPart(await aaFetchClockSource(primary[i], tt));
+            if (merged.streams.length) {
+                logSources();
+                return merged;
+            }
+        }
+    }
+
+    // No usable 'Default' (typical for currently-airing episodes) - fall back
+    // to every remaining clock mirror and the iframe embeds.
+    const restCdn = orderedCdn.filter(function (src) {
+        return (src.sourceName || '') !== 'Default';
+    });
+
+    const clockTask = aaRaceSuccess(restCdn.map(src => aaFetchClockSource(src, tt)));
     const iframeTask = aaRaceSuccess(orderedIframes.map(src =>
         resolveIframeSource(src.sourceUrl, src.sourceName, tt)
             .then(r => ({
@@ -417,26 +457,9 @@ async function aaResolveSources(parsed, tt) {
             })
     ));
 
-    // Collect both groups rather than racing them, so the picker shows every
-    // working source. Each group still races internally, so one dead clock
-    // endpoint can't stall the whole lookup.
     const settled = await Promise.all([clockTask, iframeTask]);
-    const merged = { streams: [], subtitle: '' };
-    const seenUrls = {};
-    settled.forEach(function (part) {
-        if (!part || !part.streams) return;
-        part.streams.forEach(function (st) {
-            if (!st || !st.streamUrl || seenUrls[st.streamUrl]) return;
-            seenUrls[st.streamUrl] = true;
-            merged.streams.push(st);
-        });
-        if (!merged.subtitle && part.subtitle) merged.subtitle = part.subtitle;
-    });
-    try {
-        console.log('Sources: ' + merged.streams.map(function (x) {
-            return (x.title || '?') + ' -> ' + String(x.streamUrl || '').substring(0, 70);
-        }).join(' | '));
-    } catch (e) {}
+    settled.forEach(addPart);
+    logSources();
     return merged;
 }
 
@@ -482,11 +505,19 @@ function aaRaceSuccess(tasks) {
     });
 }
 
+// NOTE: no setTimeout here on purpose - it throws ReferenceError on
+// Sora/Luna's JavaScriptCore. Slow mirrors are bounded by limiting how many
+// sources we attempt (see MAX_CDN_SOURCES / MAX_IFRAME_SOURCES) rather than
+// by racing each fetch against a timer.
+function aaFetchWithTimeout(url, options) {
+    return soraFetch(url, options);
+}
+
 async function aaFetchClockSource(src, tt) {
     const out = { streams: [], subtitle: '' };
     try {
         const clockUrl = CLOCK_BASE + aaXor56(src.sourceUrl.slice(2)).replace('clock', 'clock.json');
-        const resp = await soraFetch(clockUrl, {
+        const resp = await aaFetchWithTimeout(clockUrl, {
             headers: { 'Referer': CLOCK_BASE + '/', 'User-Agent': UA }
         });
         if (!resp) {
@@ -557,7 +588,7 @@ async function resolveIframeSource(embedUrl, sourceName, tt) {
 }
 
 async function resolveOkRu(embedUrl, sourceName, tt) {
-    const resp = await soraFetch(embedUrl, {
+    const resp = await aaFetchWithTimeout(embedUrl, {
         headers: { 'Referer': 'https://allmanga.to/', 'User-Agent': UA }
     });
     if (!resp) return null;
@@ -593,7 +624,7 @@ async function resolveOkRu(embedUrl, sourceName, tt) {
 }
 
 async function resolveMp4Upload(embedUrl, sourceName, tt) {
-    const resp = await soraFetch(embedUrl, {
+    const resp = await aaFetchWithTimeout(embedUrl, {
         headers: { 'Referer': 'https://allmanga.to/', 'User-Agent': UA }
     });
     if (!resp) return null;
@@ -611,7 +642,7 @@ async function resolveMp4Upload(embedUrl, sourceName, tt) {
 }
 
 async function resolveGenericIframe(embedUrl, sourceName, tt) {
-    const resp = await soraFetch(embedUrl, {
+    const resp = await aaFetchWithTimeout(embedUrl, {
         headers: { 'Referer': 'https://allmanga.to/', 'User-Agent': UA }
     });
     if (!resp) return null;
