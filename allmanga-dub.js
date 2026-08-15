@@ -16,10 +16,10 @@ const EPISODE_QUERY = 'query(\n$showId: String!\n$translationType: VaildTranslat
 const SOURCE_PRIORITY = ['Default', 'Yt-mp4', 'S-Mp4', 'Ak', 'Uv-mp4', 'Luf-Mp4', 'Mp4'];
 
 const FALLBACK_KEYGEN = {
-    build_id: '97',
-    epoch: 2953,
+    build_id: '114',
+    epoch: 2954,
     lane: 'k7',
-    key: '695af2782a31edc2c99a8b21a781d535fb0eab3b8574647f03931d3c3bed5f16',
+    key: 'cf5487de30b64387b21614d641cfcf6174d7f3e24f2e9c6433c916c867db8a1d',
     static_key: 'Xot36i3lK3:v1'
 };
 
@@ -149,10 +149,12 @@ async function extractStreamUrl(url) {
         const { showId, episode } = parsed;
         const keys = aaGetKeys();
 
-        // Query sub first, then dub sequentially to avoid parallel
-        // requests hitting the API rate limiter simultaneously.
+        // The API's episodeString is 1-based; episodeIdNum in the URL is
+        // 0-based, and episode "0" has no sources. Clamp to >= 1.
+        const apiEpisode = String(Math.max(1, Number(episode)));
+
         // DUB-only module: skip the sub pass entirely.
-        const dubResult = await aaResolveTranslation(keys, showId, episode, 'dub');
+        const dubResult = await aaResolveTranslation(keys, showId, apiEpisode, 'dub');
         const jobs = [dubResult];
 
         const streams = [];
@@ -165,7 +167,7 @@ async function extractStreamUrl(url) {
 
         let out;
         if (streams.length === 0) {
-            out = await aaLegacyStreams(showId, episode);
+            out = await aaLegacyStreams(showId, apiEpisode);
         } else {
             out = JSON.stringify({ streams, subtitle });
         }
@@ -219,6 +221,23 @@ async function aaFetchRemoteKeys() {
             if (resp) {
                 const json = await resp.json();
                 if (json && json.build_id && json.key && json.epoch !== undefined && json.lane) {
+                    const remoteBuild = parseInt(json.build_id, 10) || 0;
+                    const localBuild = parseInt(FALLBACK_KEYGEN.build_id, 10) || 0;
+
+                    // Upstream keygen is frequently behind the live site. Taking a
+                    // stale build would overwrite newer hardcoded values, so only
+                    // adopt it when it's at least as new as ours.
+                    if (remoteBuild < localBuild) {
+                        console.log('Keygen build ' + remoteBuild + ' < local ' + localBuild + ' - keeping local values');
+                        return null;
+                    }
+
+                    if (remoteBuild > localBuild) {
+                        console.log('Keygen build ' + remoteBuild + ' > local ' + localBuild + ' - upstream has caught up, using remote');
+                    } else {
+                        console.log('Keygen build ' + remoteBuild + ' (matches local)');
+                    }
+
                     const keys = {
                         build_id: String(json.build_id),
                         epoch: String(json.epoch),
@@ -240,7 +259,8 @@ async function aaFetchRemoteKeys() {
 
 function aaBuildToken(keys, qh, ts) {
     const payload = '{"v":1,"ts":' + ts + ',"epoch":' + keys.epoch + ',"buildId":"' + keys.build_id + '","qh":"' + qh + '","k":"' + keys.lane + '"}';
-    const iv = aaSha256(aaAscii(keys.epoch + ':' + qh + ':' + ts)).slice(0, 12);
+    // build 114 IV derivation (site zI()): sha256(epoch:buildId:qh:ts:lane)[0:12]
+    const iv = aaSha256(aaAscii(keys.epoch + ':' + keys.build_id + ':' + qh + ':' + ts + ':' + keys.lane)).slice(0, 12);
     const sealed = aaGcmSeal(aaHexToBytes(keys.key), iv, aaAscii(payload));
     const blob = new Uint8Array(1 + 12 + sealed.out.length + 16);
     blob[0] = 1;
@@ -356,7 +376,7 @@ async function aaResolveTranslation(keys, showId, episode, tt) {
 
 function aaIsCryptoStale(json) {
     const msg = (json && json.errors && json.errors[0] && json.errors[0].message) || '';
-    return msg.indexOf('AA_CRYPTO_STALE') === 0 || msg.indexOf('AA_CRYPTO_MISSING') === 0;
+    return msg.indexOf('AA_CRYPTO_STALE') === 0 || msg.indexOf('AA_CRYPTO_MISSING') === 0 || msg.indexOf('AA_CRYPTO_EXPIRED') === 0;
 }
 
 function aaParseEpisodeResponse(json, keys) {
