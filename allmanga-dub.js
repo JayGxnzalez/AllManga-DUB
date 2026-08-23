@@ -15,13 +15,42 @@ const EPISODE_QUERY = 'query(\n$showId: String!\n$translationType: VaildTranslat
 
 const SOURCE_PRIORITY = ['Default', 'Yt-mp4', 'S-Mp4', 'Ak', 'Uv-mp4', 'Luf-Mp4', 'Mp4'];
 
+// Known-good keygen snapshot (build 136, epoch 2955) — captured live on
+// 2026-08-22 (see documentation/keygen-live-capture-prompt.md). The module can
+// also self-bootstrap fresh keys when the API reports AA_CRYPTO_STALE (see
+// aaLiveKeys below), so this snapshot only seeds the first request.
 const FALLBACK_KEYGEN = {
-    build_id: '114',
-    epoch: 2954,
+    build_id: '136',
+    epoch: 2955,
     lane: 'k7',
-    key: 'cf5487de30b64387b21614d641cfcf6174d7f3e24f2e9c6433c916c867db8a1d',
+    key: 'deeb2732190ceee0d84c7668d79b64ddcd5f27b9f858f2327fe29a7841b7b5da',
     static_key: 'Xot36i3lK3:v1'
 };
+
+/* Self-bootstrap inputs (extracted from the mkissa.to crypto chunk, build 136).
+   The client derives its own AES key without any secret server round-trip:
+     embed[i]   = concat(base64decode(mask blocks))          [32 bytes]
+     salt[i]    = (buildId.charCodeAt(i % len) || 0)
+                  ^ ((i * AA_SALT_MUL + AA_SALT_ADD) & 255)
+     linear[i]  = ((i >> 3) * AA_FRAG_MUL + (i % 8) * AA_FRAG_ADD) & 255
+     mask[i]    = embed[i] ^ salt[i] ^ linear[i]
+     hmacKey    = HMAC-SHA256(mask, AA_BOOT_PREFIX + buildId)
+     bootTok    = hex(HMAC-SHA256(hmacKey, `${epoch}~${host}~${lane}~${group}~${buildId}`))
+     GET {AA_BOOTSTRAP_URL}?buildId=<id>&k=<lane>  (x-build-id / x-aa-boot headers)
+     key        = first32(base64decode(partB)) XOR mask
+   Epochs are 7-day (floor(now/604800000)); during the first day of an epoch the
+   previous one is still accepted. group is "mkissa" for the public hosts. */
+const AA_MASK_BLOCKS = ['zZ9iqAzia78=', '0GqOekVONY4=', 'uyiEMZfgVqA=', 'HBpHBAntve4='];
+const AA_SALT_MUL = 78;
+const AA_SALT_ADD = 200;
+const AA_FRAG_MUL = 234;
+const AA_FRAG_ADD = 70;
+const AA_BOOT_PREFIX = 'qrSOLsg:';
+const AA_WEEK_MS = 604800000;
+const AA_DAY_MS = 86400000;
+const AA_BOOTSTRAP_URL = 'https://api.mkissa.net/client-crypto/v1/bootstrap';
+const AA_BOOT_HOST = 'mkissa.to';
+const AA_BOOT_GROUP = 'mkissa';
 
 const CDN_BASES = [
     'https://allmanga.to',
@@ -30,7 +59,7 @@ const CDN_BASES = [
 
 let aaKeyCache = { keys: null, ts: 0 };
 
-if (typeof console !== 'undefined') console.log('AllManga (DUB) v1.3.0');
+if (typeof console !== 'undefined') console.log('AllManga (DUB) v1.4.0');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -147,11 +176,10 @@ async function extractStreamUrl(url) {
         if (cached) return cached;
 
         const { showId, episode } = parsed;
-        const keys = aaGetKeys();
-
         // The API's episodeString is 1-based; episodeIdNum in the URL is
         // 0-based, and episode "0" has no sources. Clamp to >= 1.
         const apiEpisode = String(Math.max(1, Number(episode)));
+        const keys = aaGetKeys();
 
         // DUB-only module: skip the sub pass entirely.
         const dubResult = await aaResolveTranslation(keys, showId, apiEpisode, 'dub');
@@ -196,7 +224,7 @@ function aaStreamCacheSet(key, value) {
 }
 
 // Fast path: return cached keys or the bundled fallback without any network
-// request. Remote keygen is only fetched when the API says AA_CRYPTO_STALE.
+// request. aaLiveKeys() replaces them when the API says the token is stale.
 function aaGetKeys() {
     const now = Date.now();
     if (aaKeyCache.keys && now - aaKeyCache.ts < 90000) return aaKeyCache.keys;
@@ -209,10 +237,110 @@ function aaGetKeys() {
     };
 }
 
-async function aaFetchRemoteKeys() {
+/* ---- live self-bootstrap (build 136 scheme) ------------------------------ */
+
+// Pure-JS HMAC-SHA256 over the module's existing aaSha256 (RFC 2104).
+function aaHmacSha256(key, msg) {
+    let k = key;
+    if (k.length > 64) k = aaSha256(k);
+    const ipad = new Uint8Array(64);
+    const opad = new Uint8Array(64);
+    for (let i = 0; i < 64; i++) {
+        const kb = i < k.length ? k[i] : 0;
+        ipad[i] = kb ^ 0x36;
+        opad[i] = kb ^ 0x5c;
+    }
+    const inner = aaSha256(aaConcat(ipad, msg));
+    return aaSha256(aaConcat(opad, inner));
+}
+
+function aaConcat(a, b) {
+    const out = new Uint8Array(a.length + b.length);
+    out.set(a, 0);
+    out.set(b, a.length);
+    return out;
+}
+
+// Deterministic client mask for a given build id (see block comment above).
+function aaBuildMask(buildId) {
+    const embed = new Uint8Array(32);
+    let off = 0;
+    for (let b = 0; b < AA_MASK_BLOCKS.length; b++) {
+        const blk = aaUnb64(AA_MASK_BLOCKS[b]);
+        for (let i = 0; i < blk.length && off + i < 32; i++) embed[off + i] = blk[i];
+        off += blk.length;
+    }
+    const mask = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) {
+        const cc = buildId.charCodeAt(i % buildId.length) || 0;
+        const salt = cc ^ ((i * AA_SALT_MUL + AA_SALT_ADD) & 255);
+        const linear = (((i >> 3) * AA_FRAG_MUL) + ((i % 8) * AA_FRAG_ADD)) & 255;
+        mask[i] = embed[i] ^ salt ^ linear;
+    }
+    return mask;
+}
+
+async function aaBootstrapFor(lane, epoch) {
+    try {
+        const mask = aaBuildMask(String(FALLBACK_KEYGEN.build_id));
+        const hmacKey = aaHmacSha256(mask, aaAscii(AA_BOOT_PREFIX + FALLBACK_KEYGEN.build_id));
+        // message parts (site order): epoch ~ host ~ lane ~ group ~ buildId
+        const msg = epoch + '~' + AA_BOOT_HOST + '~' + lane + '~' + AA_BOOT_GROUP + '~' + FALLBACK_KEYGEN.build_id;
+        const bootTok = aaHex(aaHmacSha256(hmacKey, aaAscii(msg)));
+        const url = AA_BOOTSTRAP_URL + '?buildId=' + encodeURIComponent(FALLBACK_KEYGEN.build_id) +
+            '&k=' + encodeURIComponent(lane);
+        const resp = await soraFetch(url, {
+            headers: {
+                'x-build-id': String(FALLBACK_KEYGEN.build_id),
+                'x-aa-boot': bootTok,
+                'Referer': 'https://' + AA_BOOT_HOST + '/',
+                'Origin': 'https://' + AA_BOOT_HOST,
+                'Accept': 'application/json, text/plain, */*',
+                'User-Agent': UA
+            }
+        });
+        if (!resp || !resp.ok) {
+            console.log('bootstrap http ' + (resp ? resp.status : 'no-response') + ' for lane ' + lane);
+            return null;
+        }
+        const j = await resp.json();
+        if (!j || !j.partB) { console.log('bootstrap empty partB'); return null; }
+        const raw = aaUnb64(j.partB);
+        if (!raw || raw.length < 32) { console.log('bootstrap short partB'); return null; }
+        const key = new Uint8Array(32);
+        for (let i = 0; i < 32; i++) key[i] = raw[i] ^ mask[i % mask.length];
+        return {
+            build_id: String(FALLBACK_KEYGEN.build_id),
+            epoch: String(j.epoch !== undefined ? j.epoch : epoch),
+            lane: (j.k && String(j.k)) || lane,
+            key: aaHex(key),
+            static_key: FALLBACK_KEYGEN.static_key
+        };
+    } catch (error) {
+        console.log('bootstrap error: ' + error);
+        return null;
+    }
+}
+
+// Refresh keys when the API rejects our aaReq token: self-bootstrap first
+// (current epoch, then previous), remote keygen repo as last resort.
+async function aaFetchRemoteKeys(lane) {
     const now = Date.now();
     if (aaKeyCache.keys && now - aaKeyCache.ts < 90000) return aaKeyCache.keys;
 
+    const curEpoch = Math.floor(now / AA_WEEK_MS);
+    const prevEpoch = (now - curEpoch * AA_WEEK_MS < AA_DAY_MS && curEpoch > 0) ? curEpoch - 1 : curEpoch;
+    const useLane = lane || FALLBACK_KEYGEN.lane;
+    for (const ep of [curEpoch, prevEpoch]) {
+        const keys = await aaBootstrapFor(useLane, ep);
+        if (keys) {
+            console.log('self-bootstrap ok: epoch ' + keys.epoch + ', lane ' + keys.lane);
+            aaKeyCache.keys = keys;
+            aaKeyCache.ts = Date.now();
+            return keys;
+        }
+    }
+    console.log('self-bootstrap failed; trying remote keygen repo');
     for (let i = 0; i < KEYGEN_URLS.length; i++) {
         try {
             const resp = await soraFetch(KEYGEN_URLS[i], {
@@ -220,24 +348,10 @@ async function aaFetchRemoteKeys() {
             });
             if (resp) {
                 const json = await resp.json();
-                if (json && json.build_id && json.key && json.epoch !== undefined && json.lane) {
-                    const remoteBuild = parseInt(json.build_id, 10) || 0;
-                    const localBuild = parseInt(FALLBACK_KEYGEN.build_id, 10) || 0;
-
-                    // Upstream keygen is frequently behind the live site. Taking a
-                    // stale build would overwrite newer hardcoded values, so only
-                    // adopt it when it's at least as new as ours.
-                    if (remoteBuild < localBuild) {
-                        console.log('Keygen build ' + remoteBuild + ' < local ' + localBuild + ' - keeping local values');
-                        return null;
-                    }
-
-                    if (remoteBuild > localBuild) {
-                        console.log('Keygen build ' + remoteBuild + ' > local ' + localBuild + ' - upstream has caught up, using remote');
-                    } else {
-                        console.log('Keygen build ' + remoteBuild + ' (matches local)');
-                    }
-
+                // Guard: the third-party keygen repo lags behind the live site.
+                const remoteBuild = Number(json && json.build_id);
+                const fallbackBuild = Number(FALLBACK_KEYGEN.build_id);
+                if (json && json.build_id && json.key && json.epoch !== undefined && json.lane && remoteBuild >= fallbackBuild) {
                     const keys = {
                         build_id: String(json.build_id),
                         epoch: String(json.epoch),
@@ -249,6 +363,7 @@ async function aaFetchRemoteKeys() {
                     aaKeyCache.ts = Date.now();
                     return keys;
                 }
+                console.log('Remote keygen stale (build ' + (json && json.build_id) + ' < ' + fallbackBuild + '); keeping fallback');
             }
         } catch (error) {
             console.log('Keygen fetch error: ' + error);
@@ -358,14 +473,25 @@ function aaEpisodeHeaders(keys) {
 async function aaResolveTranslation(keys, showId, episode, tt) {
     let json = await aaEpisodeQuery(keys, showId, tt, episode);
     if (aaIsCryptoStale(json)) {
-        const fresh = await aaFetchRemoteKeys();
+        const fresh = await aaFetchRemoteKeys(keys.lane);
         if (fresh) {
             console.log('aaReq stale for ' + tt + '; refreshed keygen, retrying');
             keys = fresh;
             json = await aaEpisodeQuery(keys, showId, tt, episode);
         }
     }
-    const parsed = aaParseEpisodeResponse(json, keys);
+    let parsed = aaParseEpisodeResponse(json, keys);
+    if (!parsed && json && json.data && json.data.tobeparsed) {
+        // Response present but decryption failed — the epoch probably rotated
+        // mid-session. Re-bootstrap and retry once (mirrors the site's rk()).
+        console.log('tobeparsed decrypt failed for ' + tt + '; re-bootstrapping');
+        const fresh = await aaFetchRemoteKeys(keys.lane);
+        if (fresh) {
+            keys = fresh;
+            json = await aaEpisodeQuery(keys, showId, tt, episode);
+            parsed = aaParseEpisodeResponse(json, keys);
+        }
+    }
     if (!parsed) {
         console.log('No sources for ' + tt + ' (encrypted episode query failed)');
         return { streams: [], subtitle: '' };
@@ -448,13 +574,11 @@ async function aaResolveSources(parsed, tt) {
     const primary = orderedCdn.filter(function (src) {
         return (src.sourceName || '') === 'Default';
     });
-    if (primary.length) {
-        for (let i = 0; i < primary.length; i++) {
-            addPart(await aaFetchClockSource(primary[i], tt));
-            if (merged.streams.length) {
-                logSources();
-                return merged;
-            }
+    for (let i = 0; i < primary.length; i++) {
+        addPart(await aaFetchClockSource(primary[i], tt));
+        if (merged.streams.length) {
+            logSources();
+            return merged;
         }
     }
 
@@ -525,41 +649,18 @@ function aaRaceSuccess(tasks) {
     });
 }
 
-// NOTE: no setTimeout here on purpose - it throws ReferenceError on
-// Sora/Luna's JavaScriptCore. Slow mirrors are bounded by limiting how many
-// sources we attempt (see MAX_CDN_SOURCES / MAX_IFRAME_SOURCES) rather than
-// by racing each fetch against a timer.
-function aaFetchWithTimeout(url, options) {
-    return soraFetch(url, options);
-}
-
 async function aaFetchClockSource(src, tt) {
     const out = { streams: [], subtitle: '' };
     try {
         const clockUrl = CLOCK_BASE + aaXor56(src.sourceUrl.slice(2)).replace('clock', 'clock.json');
-        const resp = await aaFetchWithTimeout(clockUrl, {
+        const resp = await soraFetch(clockUrl, {
             headers: { 'Referer': CLOCK_BASE + '/', 'User-Agent': UA }
         });
         if (!resp) {
             console.log('Clock source ' + (src.sourceName || '?') + ': no response');
             return out;
         }
-        // clock.json sometimes returns a non-JSON body (error string), and
-        // soraFetch may hand back an already-parsed object - handle both
-        // instead of letting resp.json() throw.
-        let json = null;
-        try {
-            const raw = (typeof resp.text === 'function') ? await resp.text() : null;
-            if (raw && typeof raw === 'string') {
-                const t = raw.trim();
-                if (t.charAt(0) === '{' || t.charAt(0) === '[') json = JSON.parse(t);
-            } else if (raw && typeof raw === 'object') {
-                json = raw;
-            }
-        } catch (e) { json = null; }
-        if (!json) {
-            try { json = await resp.json(); } catch (e) { json = null; }
-        }
+        const json = await resp.json();
         const links = (json && json.links) || [];
         if (!links.length) {
             console.log('Clock source ' + (src.sourceName || '?') + ': no links');
@@ -608,7 +709,7 @@ async function resolveIframeSource(embedUrl, sourceName, tt) {
 }
 
 async function resolveOkRu(embedUrl, sourceName, tt) {
-    const resp = await aaFetchWithTimeout(embedUrl, {
+    const resp = await soraFetch(embedUrl, {
         headers: { 'Referer': 'https://allmanga.to/', 'User-Agent': UA }
     });
     if (!resp) return null;
@@ -644,7 +745,7 @@ async function resolveOkRu(embedUrl, sourceName, tt) {
 }
 
 async function resolveMp4Upload(embedUrl, sourceName, tt) {
-    const resp = await aaFetchWithTimeout(embedUrl, {
+    const resp = await soraFetch(embedUrl, {
         headers: { 'Referer': 'https://allmanga.to/', 'User-Agent': UA }
     });
     if (!resp) return null;
@@ -652,8 +753,7 @@ async function resolveMp4Upload(embedUrl, sourceName, tt) {
     let m = html.match(/src\s*:\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i)
         || html.match(/["']?file["']?\s*[:=]\s*["'](https?:\/\/[^"']+\.mp4[^"']*)["']/i)
         || html.match(/(https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*)/i);
-    if (!m) { console.log('Mp4Upload: no media URL in page (len=' + html.length + ')'); return null; }
-    console.log('Mp4Upload -> ' + m[1]);
+    if (!m) return null;
     return {
         title: (sourceName || 'Mp4Upload'),
         streamUrl: m[1],
@@ -662,7 +762,7 @@ async function resolveMp4Upload(embedUrl, sourceName, tt) {
 }
 
 async function resolveGenericIframe(embedUrl, sourceName, tt) {
-    const resp = await aaFetchWithTimeout(embedUrl, {
+    const resp = await soraFetch(embedUrl, {
         headers: { 'Referer': 'https://allmanga.to/', 'User-Agent': UA }
     });
     if (!resp) return null;
