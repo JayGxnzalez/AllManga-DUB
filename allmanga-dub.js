@@ -169,7 +169,7 @@ async function extractEpisodes(url) {
 async function extractStreamUrl(url) {
     try {
         const parsed = parseEpisodeUrl(url);
-        if (!parsed) return JSON.stringify({ streams: [], subtitle: '' });
+        if (!parsed) return JSON.stringify({ streams: [], subtitle: '', subtitles: [], allSubtitles: [] });
 
         const cacheKey = String(url);
         const cached = aaStreamCacheGet(cacheKey);
@@ -186,10 +186,19 @@ async function extractStreamUrl(url) {
         const jobs = [dubResult];
 
         const streams = [];
+        const allSubtitles = [];
+        const seenSubUrls = {};
         let subtitle = '';
         jobs.forEach(result => {
             if (!result || !result.streams || !result.streams.length) return;
             streams.push(...result.streams);
+            if (result.allSubtitles) {
+                result.allSubtitles.forEach(function (sub) {
+                    if (!sub || !sub.url || seenSubUrls[sub.url]) return;
+                    seenSubUrls[sub.url] = true;
+                    allSubtitles.push(sub);
+                });
+            }
             if (!subtitle && result.subtitle) subtitle = result.subtitle;
         });
 
@@ -197,13 +206,20 @@ async function extractStreamUrl(url) {
         if (streams.length === 0) {
             out = await aaLegacyStreams(showId, apiEpisode);
         } else {
-            out = JSON.stringify({ streams, subtitle });
+            // Emit subtitle (singular) and subtitles (plural) alongside
+            // allSubtitles for client compatibility.
+            out = JSON.stringify({
+                streams,
+                subtitle,
+                subtitles: allSubtitles,
+                allSubtitles
+            });
         }
         aaStreamCacheSet(cacheKey, out);
         return out;
     } catch (error) {
         console.log('Stream error: ' + error);
-        return JSON.stringify({ streams: [], subtitle: '' });
+        return JSON.stringify({ streams: [], subtitle: '', subtitles: [], allSubtitles: [] });
     }
 }
 
@@ -548,8 +564,9 @@ async function aaResolveSources(parsed, tt) {
     const orderedCdn = aaOrderByPreference(cdn, SOURCE_PRIORITY);
     const orderedIframes = aaOrderByPreference(iframes, ['Mp4', 'Ok', 'S-Mp4', 'Luf-Mp4', 'Uv-mp4', 'Default', 'Ak', 'Yt-mp4']).slice(0, 4);
 
-    const merged = { streams: [], subtitle: '' };
+    const merged = { streams: [], subtitle: '', allSubtitles: [] };
     const seenUrls = {};
+    const seenSubs = {};
     const addPart = function (part) {
         if (!part || !part.streams) return;
         part.streams.forEach(function (st) {
@@ -557,6 +574,13 @@ async function aaResolveSources(parsed, tt) {
             seenUrls[st.streamUrl] = true;
             merged.streams.push(st);
         });
+        if (part.allSubtitles) {
+            part.allSubtitles.forEach(function (sub) {
+                if (!sub || !sub.url || seenSubs[sub.url]) return;
+                seenSubs[sub.url] = true;
+                merged.allSubtitles.push(sub);
+            });
+        }
         if (!merged.subtitle && part.subtitle) merged.subtitle = part.subtitle;
     };
     const logSources = function () {
@@ -650,7 +674,7 @@ function aaRaceSuccess(tasks) {
 }
 
 async function aaFetchClockSource(src, tt) {
-    const out = { streams: [], subtitle: '' };
+    const out = { streams: [], subtitle: '', allSubtitles: [] };
     try {
         const clockUrl = CLOCK_BASE + aaXor56(src.sourceUrl.slice(2)).replace('clock', 'clock.json');
         const resp = await soraFetch(clockUrl, {
@@ -677,8 +701,22 @@ async function aaFetchClockSource(src, tt) {
                     'User-Agent': UA
                 }
             });
-            if (!out.subtitle && l.subtitles && l.subtitles[0] && l.subtitles[0].src) {
-                out.subtitle = l.subtitles[0].src;
+            // Collect every subtitle track (skipping thumbnail/preview tracks,
+            // which some sources expose alongside real ones).
+            if (l.subtitles && l.subtitles.length) {
+                l.subtitles.forEach(function (sub) {
+                    if (!sub || !sub.src) return;
+                    const kind = String(sub.kind || 'captions').toLowerCase();
+                    if (kind === 'thumbnails') return;
+                    if (out.allSubtitles.some(function (x) { return x.url === sub.src; })) return;
+                    out.allSubtitles.push({
+                        url: sub.src,
+                        label: sub.label || sub.lang || sub.srclang || 'Subtitle',
+                        kind: kind,
+                        headers: { 'Referer': CLOCK_BASE + '/', 'User-Agent': UA }
+                    });
+                });
+                if (!out.subtitle && out.allSubtitles.length) out.subtitle = out.allSubtitles[0].url;
             }
         });
     } catch (error) {
@@ -813,7 +851,7 @@ async function aaLegacyStreams(showId, episode) {
         const data = await gql(`{episodeInfos(showId:${JSON.stringify(showId)},episodeNumStart:${episode},episodeNumEnd:${episode}){episodeIdNum vidInforssub vidInforsdub vidInforsraw}}`);
         const eps = (((data || {}).episodeInfos) || []);
         const ep = eps.find(e => String(e.episodeIdNum) === String(episode)) || eps[0];
-        if (!ep) return JSON.stringify({ streams: [], subtitle: '' });
+        if (!ep) return JSON.stringify({ streams: [], subtitle: '', subtitles: [], allSubtitles: [] });
 
         const streams = [];
         [['sub', ep.vidInforssub], ['dub', ep.vidInforsdub], ['raw', ep.vidInforsraw]].forEach(function (pair) {
@@ -842,10 +880,10 @@ async function aaLegacyStreams(showId, episode) {
             }
         });
 
-        return JSON.stringify({ streams, subtitle: '' });
+        return JSON.stringify({ streams, subtitle: '', subtitles: [], allSubtitles: [] });
     } catch (error) {
         console.log('Legacy stream error: ' + error);
-        return JSON.stringify({ streams: [], subtitle: '' });
+        return JSON.stringify({ streams: [], subtitle: '', subtitles: [], allSubtitles: [] });
     }
 }
 
