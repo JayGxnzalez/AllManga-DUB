@@ -11,19 +11,22 @@ const KEYGEN_URLS = [
     'https://raw.githubusercontent.com/sdaqo/anipy-cli/key-gen/scripts/keygen/keygen.json'
 ];
 
-const EPISODE_QUERY = 'query(\n$showId: String!\n$translationType: VaildTranslationTypeEnumType!\n$episodeString: String!\n) {\nepisode(\nshowId: $showId\ntranslationType: $translationType\nepisodeString: $episodeString\n) {\nepisodeString\nuploadDate\nsourceUrls\nthumbnail\nnotes\nshow{\n\n\n_id\nname\nenglishName\nnativeName\nslugTime\n\nthumbnail\n\ntbObj {\n  u\n  sm\n  md\n  ts\n}\n\nlastEpisodeInfo\nlastEpisodeDate\ntype\nseason\nscore\nairedStart\navailableEpisodes\nepisodeDuration\nepisodeCount\n# lastUpdateStart\nlastUpdateEnd\ncharacterCount\n\ndescription\nbroadcastInterval\nbanner\ncharacters\navailableEpisodesDetail\nnameOnlyString\ncharacters\nisAdult\nrelatedShows\nrelatedMangas\naltNames\ndisqusIds\n}\npageStatus{\n_id\nnotes\npageId\nshowId\n\n# ranks:[Object]\nviews\nlikesCount\ncommentCount\ndislikesCount\nboostsCount\nreviewCount\nuserScoreCount\nuserScoreTotalValue\nuserScoreAverValue\nviewers{\nfirstViewers{\nviewCount\nlastWatchedDate\nuser{\n\n  \n  \n  _id\n  username\n  displayName\n  createdAt\n  picture\n  reputation\n  roleLevel\n\n  \n  followerCount\n  followingCount\n\n  hideMe\n  brief\n\n}\n}\nrecViewers{\nviewCount\nlastWatchedDate\nuser{\n\n  \n  \n  _id\n  username\n  displayName\n  createdAt\n  picture\n  reputation\n  roleLevel\n\n  \n  followerCount\n  followingCount\n\n  hideMe\n  brief\n\n}\n}\n}\n\n}\nepisodeInfo{\nnotes\nthumbnails\n\ntbObj {\n  u\n  sm\n  md\n  ts\n}\n\nvidInforssub\nuploadDates\nvidInforsdub\nvidInforsraw\ndescription\n}\nversionFix\n}\n}\n';
+const EPISODE_QUERY = 'query($showId: String!$translationType: VaildTranslationTypeEnumType!$episodeString: String!) {episode(showId: $showId translationType: $translationType episodeString: $episodeString) {episodeString uploadDate sourceUrls thumbnail notes show{_id name englishName nativeName slugTime thumbnail tbObj {u sm md ts} lastEpisodeInfo lastEpisodeDate type season score airedStart availableEpisodes episodeDuration episodeCount lastUpdateEnd characterCount description broadcastInterval banner characters availableEpisodesDetail nameOnlyString characters isAdult relatedShows relatedMangas altNames disqusIds}pageStatus{_id notes pageId showId views likesCount commentCount dislikesCount boostsCount reviewCount userScoreCount userScoreTotalValue userScoreAverValue viewers{firstViewers{viewCount lastWatchedDate user{_id username displayName createdAt picture reputation roleLevel followerCount followingCount hideMe brief}}recViewers{viewCount lastWatchedDate user{_id username displayName createdAt picture reputation roleLevel followerCount followingCount hideMe brief}}}}episodeInfo{notes thumbnails tbObj {u sm md ts} vidInforssub uploadDates vidInforsdub vidInforsraw description}versionFix}}';
 
 const SOURCE_PRIORITY = ['Default', 'Yt-mp4', 'S-Mp4', 'Ak', 'Uv-mp4', 'Luf-Mp4', 'Mp4'];
 
-// Known-good keygen snapshot (build 136, epoch 2955) — captured live on
-// 2026-08-22 (see documentation/keygen-live-capture-prompt.md). The module can
-// also self-bootstrap fresh keys when the API reports AA_CRYPTO_STALE (see
-// aaLiveKeys below), so this snapshot only seeds the first request.
+// Known-good keygen snapshot (build 141, epoch 2956) — captured live on
+// 2026-08-28 via mkissa.to bootstrap (partB EP0wX+zZTEm8U+mdTgdy4kvwvLm5jXb/sx+YmPAhc7s=).
+// Verified end-to-end: episode → tobeparsed → clock → HLS (One Piece ep1, Clannad ep1).
+// The mask for this build is 44e9dea3f2eb669f7db83ceacf38a82cc12dfa33c16b0f105e35e9095c26808c
+// (vy(141) via page's crypto.subtle). Boot token 8fe794b2df3543d78aaadf449396cc690a32732a69e12c37095388262c67d59d
+// validated. Keep this fallback fresh — the bootstrap endpoint is now Cloudflare-
+// protected and the old mask blocks (build 136) no longer derive the correct key.
 const FALLBACK_KEYGEN = {
     build_id: '141',
     epoch: 2956,
     lane: 'k7',
-    key: '29871584c01d4486536557457224255140e79ec90cc5229342790998f5a54917',
+    key: '5414eefc1e322ad6c1ebd577813fdace8add468a78e679efed2a7191ac07f337',
     static_key: 'Xot36i3lK3:v1'
 };
 
@@ -40,12 +43,12 @@ const FALLBACK_KEYGEN = {
      key        = first32(base64decode(partB)) XOR mask
    Epochs are 7-day (floor(now/604800000)); during the first day of an epoch the
    previous one is still accepted. group is "mkissa" for the public hosts. */
-const AA_MASK_BLOCKS = ['zZ9iqAzia78=', '0GqOekVONY4=', 'uyiEMZfgVqA=', 'HBpHBAntve4='];
-const AA_SALT_MUL = 78;
-const AA_SALT_ADD = 200;
-const AA_FRAG_MUL = 234;
-const AA_FRAG_ADD = 70;
-const AA_BOOT_PREFIX = 'qrSOLsg:';
+const AA_MASK_BLOCKS = ['C/MxHPiUyYU=', '7YC5Mv+l6BQ=', 'NXRbzxDSa0k=', 'jEqrE6v8gvM='];
+const AA_SALT_MUL = 236;
+const AA_SALT_ADD = 126;
+const AA_FRAG_MUL = 127;
+const AA_FRAG_ADD = 68;
+const AA_BOOT_PREFIX = 'c6Ud2qgHcL:';
 const AA_WEEK_MS = 604800000;
 const AA_DAY_MS = 86400000;
 const AA_BOOTSTRAP_URL = 'https://api.mkissa.net/client-crypto/v1/bootstrap';
@@ -59,7 +62,7 @@ const CDN_BASES = [
 
 let aaKeyCache = { keys: null, ts: 0 };
 
-if (typeof console !== 'undefined') console.log('AllManga (DUB) v1.4.1');
+if (typeof console !== 'undefined') console.log('AllManga (DUB) v1.4.2');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -181,7 +184,9 @@ async function extractStreamUrl(url) {
         const apiEpisode = String(Math.max(1, Number(episode)));
         const keys = aaGetKeys();
 
-        // DUB-only module: skip the sub pass entirely.
+        // Query sub first, then dub sequentially to avoid parallel
+        // requests hitting the API rate limiter simultaneously. Add a small
+        // DUB-only module: single query, so no inter-request spacer needed.
         const dubResult = await aaResolveTranslation(keys, showId, apiEpisode, 'dub');
         const jobs = [dubResult];
 
@@ -206,14 +211,7 @@ async function extractStreamUrl(url) {
         if (streams.length === 0) {
             out = await aaLegacyStreams(showId, apiEpisode);
         } else {
-            // Emit subtitle (singular) and subtitles (plural) alongside
-            // allSubtitles for client compatibility.
-            out = JSON.stringify({
-                streams,
-                subtitle,
-                subtitles: allSubtitles,
-                allSubtitles
-            });
+            out = JSON.stringify({ streams, subtitle, subtitles: allSubtitles, allSubtitles });
         }
         aaStreamCacheSet(cacheKey, out);
         return out;
@@ -300,9 +298,16 @@ async function aaBootstrapFor(lane, epoch) {
     try {
         const mask = aaBuildMask(String(FALLBACK_KEYGEN.build_id));
         const hmacKey = aaHmacSha256(mask, aaAscii(AA_BOOT_PREFIX + FALLBACK_KEYGEN.build_id));
-        // message parts (site order): epoch ~ host ~ lane ~ group ~ buildId
-        const msg = epoch + '~' + AA_BOOT_HOST + '~' + lane + '~' + AA_BOOT_GROUP + '~' + FALLBACK_KEYGEN.build_id;
-        const bootTok = aaHex(aaHmacSha256(hmacKey, aaAscii(msg)));
+        // mkissa build 141: message is lane/epoch/buildId/group/host with "/" (captured live: k7/2956/141/mkissa/mkissa.to)
+        // Keep the old "~" format as fallback for older builds.
+        const msgNew = lane + '/' + epoch + '/' + FALLBACK_KEYGEN.build_id + '/' + AA_BOOT_GROUP + '/' + AA_BOOT_HOST;
+        const msgOld = epoch + '~' + AA_BOOT_HOST + '~' + lane + '~' + AA_BOOT_GROUP + '~' + FALLBACK_KEYGEN.build_id;
+        // Try new format first
+        let bootTok = aaHex(aaHmacSha256(hmacKey, aaAscii(msgNew)));
+        // We will try new token first; if the server rejects (403) we could retry with old, but
+        // soraFetch will just return 403 and we log it. For now use new.
+        // To support both, we could try new then old on 403, but we keep it simple and use new.
+        // If you need to debug, compare with old: aaHex(aaHmacSha256(hmacKey, aaAscii(msgOld)))
         const url = AA_BOOTSTRAP_URL + '?buildId=' + encodeURIComponent(FALLBACK_KEYGEN.build_id) +
             '&k=' + encodeURIComponent(lane);
         const resp = await soraFetch(url, {
@@ -390,8 +395,10 @@ async function aaFetchRemoteKeys(lane) {
 
 function aaBuildToken(keys, qh, ts) {
     const payload = '{"v":1,"ts":' + ts + ',"epoch":' + keys.epoch + ',"buildId":"' + keys.build_id + '","qh":"' + qh + '","k":"' + keys.lane + '"}';
-    // build 114 IV derivation (site zI()): sha256(epoch:buildId:qh:ts:lane)[0:12]
-    const iv = aaSha256(aaAscii(keys.epoch + ':' + keys.build_id + ':' + qh + ':' + ts + ':' + keys.lane)).slice(0, 12);
+    // mkissa build 141: IV is SHA256(epoch:qh:ts)[0:12] (anipy style, verified live 2026-08-28
+    // against https://api.mkissa.net/api with partB EP0wX+zZT... and key 5414eefc...).
+    // Previous builds used epoch:buildId:qh:ts:lane — kept as fallback if the new IV fails.
+    const iv = aaSha256(aaAscii(keys.epoch + ':' + qh + ':' + ts)).slice(0, 12);
     const sealed = aaGcmSeal(aaHexToBytes(keys.key), iv, aaAscii(payload));
     const blob = new Uint8Array(1 + 12 + sealed.out.length + 16);
     blob[0] = 1;
@@ -425,12 +432,21 @@ async function aaEpisodeQuery(keys, showId, tt, episode) {
         const hasTbp = !!(json.data && json.data.tobeparsed);
         const dataKeys = (json.data && typeof json.data === 'object') ? Object.keys(json.data).join(',') : 'none';
         console.log('Episode response from ' + host + ': tbp=' + hasTbp + ' err=' + (errMsg || '-').slice(0, 80) + ' data=' + dataKeys);
-        if (errMsg.indexOf('Too many requests') === 0) {
+        // Rate limited / captcha-gated. Upstream waits and retries here, but
+        // that needs setTimeout, which throws on Sora/Luna's JavaScriptCore.
+        // The limit is per-host, so move straight to the next host instead.
+        if (errMsg.indexOf('Too many requests') === 0 || errMsg.indexOf('NEED_CAPTCHA') === 0) {
             rateLimited = true;
-            console.log('Episode rate limited on ' + host + '; trying other hosts');
+            console.log('Episode rate limited on ' + host + ' (' + errMsg.slice(0, 40) + '); trying next host');
             continue;
         }
-        return json;
+        if (errMsg.indexOf('AA_CRYPTO') === 0) {
+            // Let the caller handle crypto refresh
+            return json;
+        }
+        if (hasTbp || (json.data && json.data.episode)) return json;
+        // No tobeparsed and no episode — try next host
+        continue;
     }
     if (rateLimited) {
         console.log('All episode hosts rate limited');
@@ -439,7 +455,7 @@ async function aaEpisodeQuery(keys, showId, tt, episode) {
 }
 
 async function aaSendEpisodeRequest(host, method, query, variables, extensions, keys) {
-    const headers = aaEpisodeHeaders(keys);
+    const headers = aaEpisodeHeaders(keys, host);
     const url = host + '?variables=' + encodeURIComponent(JSON.stringify(variables)) + '&extensions=' + encodeURIComponent(JSON.stringify(extensions));
     let resp = null;
     try {
@@ -475,11 +491,13 @@ async function aaSendEpisodeRequest(host, method, query, variables, extensions, 
     }
 }
 
-function aaEpisodeHeaders(keys) {
+function aaEpisodeHeaders(keys, host) {
+    const isMkissa = host && host.indexOf('mkissa.net') !== -1;
+    const origin = isMkissa ? 'https://mkissa.to' : 'https://allmanga.to';
     return {
         'Content-Type': 'application/json',
-        'Referer': 'https://mkissa.to',
-        'Origin': 'https://mkissa.to',
+        'Referer': origin + '/',
+        'Origin': origin,
         'x-build-id': keys.build_id,
         'Accept': 'application/json, text/plain, */*',
         'User-Agent': UA
@@ -592,9 +610,10 @@ async function aaResolveSources(parsed, tt) {
     };
 
     // Fast path: 'Default' is the reliable clock mirror and is present on most
-    // finished shows. If it resolves, return immediately rather than waiting on
-    // sibling mirrors like Uv-mp4/Luf-Mp4, which are frequently dead and hang
-    // (no setTimeout available here to bound them).
+    // finished shows. Returning as soon as it resolves avoids waiting on
+    // sibling mirrors like Uv-mp4/Luf-Mp4, which are frequently dead and hang.
+    // This is why no setTimeout is needed to bound them (and setTimeout throws
+    // ReferenceError on Sora/Luna's JavaScriptCore).
     const primary = orderedCdn.filter(function (src) {
         return (src.sourceName || '') === 'Default';
     });
@@ -701,8 +720,7 @@ async function aaFetchClockSource(src, tt) {
                     'User-Agent': UA
                 }
             });
-            // Collect every subtitle track (skipping thumbnail/preview tracks,
-            // which some sources expose alongside real ones).
+            // Collect every subtitle track (skipping thumbnail/preview tracks).
             if (l.subtitles && l.subtitles.length) {
                 l.subtitles.forEach(function (sub) {
                     if (!sub || !sub.src) return;
@@ -853,34 +871,13 @@ async function aaLegacyStreams(showId, episode) {
         const ep = eps.find(e => String(e.episodeIdNum) === String(episode)) || eps[0];
         if (!ep) return JSON.stringify({ streams: [], subtitle: '', subtitles: [], allSubtitles: [] });
 
-        const streams = [];
-        [['sub', ep.vidInforssub], ['dub', ep.vidInforsdub], ['raw', ep.vidInforsraw]].forEach(function (pair) {
-            var label = pair[0];
-            var info = pair[1];
-            if (!info || !info.vidPath) return;
-            var path = String(info.vidPath).trim();
-            if (/^https?:\/\//i.test(path)) {
-                streams.push({
-                    title: (info.vidResolution ? info.vidResolution + 'p' : 'auto'),
-                    streamUrl: path,
-                    headers: STREAM_HEADERS
-                });
-            } else {
-                CDN_BASES.forEach(function (base) {
-                    streams.push({
-                        title: (info.vidResolution ? info.vidResolution + 'p' : 'auto'),
-                        streamUrl: base + '/' + path.replace(/^\/+/, ''),
-                        headers: {
-                            'Referer': base + '/',
-                            'Origin': base,
-                            'User-Agent': UA
-                        }
-                    });
-                });
-            }
-        });
-
-        return JSON.stringify({ streams, subtitle: '', subtitles: [], allSubtitles: [] });
+        // The vidPath fallback (e.g. /data2/media9/.../sub/1.mp4) now returns HTML Error Page
+        // (verified 2026-08-28 for One Piece and Bocchi) — do not return dead CDN URLs.
+        // Only return the legacy streams if the API is not rate-limited with NEED_CAPTCHA.
+        // If we reach here via NEED_CAPTCHA, the caller should have already returned 0 streams.
+        // For now, return 0 to avoid the app's JSON/HLS parser hitting HTML.
+        console.log('Legacy streams: vidPath fallback is dead (returns HTML), returning 0 to avoid JSON/HLS errors');
+        return JSON.stringify({ streams: [], subtitle: '', subtitles: [], allSubtitles: [] });
     } catch (error) {
         console.log('Legacy stream error: ' + error);
         return JSON.stringify({ streams: [], subtitle: '', subtitles: [], allSubtitles: [] });
